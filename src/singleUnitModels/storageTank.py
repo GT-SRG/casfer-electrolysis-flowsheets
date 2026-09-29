@@ -1,63 +1,60 @@
 #------------------------------------------------------------------------------
-# function:     storageTank.py                                               #
-# Description:  Function to define storage tank model equations              #
-#               Stores product output for 2 days                             #
-#               Capital cost only (no operating cost)                        #
-#                                                                            #
-# Input:        - m : Pyomo concrete model                                   #
-#                                                                            #
-# Output:       - m with all storage tank model equations                    #
-#                                                                            #
+# function:     storageTank.py                                                #
+# Description:  Product storage tank, sized for storageTimeHrs of product.    #
+#               Capital cost only. Pure pass-through of every component.      #
+#                                                                             #
+#               Streams: inlet -> outlet                                      #
+#                                                                             #
+# Input:        - m : Pyomo concrete model                                    #
+#               - blockName : st                                              #
+#                                                                             #
+# Output:       - m.st                                                        #
 #------------------------------------------------------------------------------
 
 import pyomo.environ as pyo
 try:
     from . import getParams
+    from . import streamTools
 except ImportError:
     import getParams
+    import streamTools
+
 
 def storageTank(m, blockName='st'):
 
-    # create a named block on the model so multiple storage tanks can exist
-    setattr(m, blockName, pyo.Block())
-    blk = getattr(m, blockName)
+    blk = pyo.Block()
+    m.add_component(blockName, blk)
 
-    # Load parameters for storage tank from getParams
     storageTankParams = getParams.params.get('Storage Tank', {})
 
-    def _get_param(key, default):
-        val = storageTankParams.get(key, default)
+    def _getParam(key, default):
         try:
-            return float(val)
+            return float(storageTankParams.get(key, default))
         except Exception:
             return default
 
-    blk.costReference   = pyo.Param(initialize=_get_param('Cost Reference', 254842.0))   # $
-    blk.volumeReference = pyo.Param(initialize=_get_param('Volume Reference', 249.83718))  # m3
-    blk.capexFactor     = pyo.Param(initialize=_get_param('Capex Factor', 0.6))  # dimensionless
-    blk.storageTimeHrs  = pyo.Param(initialize=48.0, mutable=True)  # 2 days = 48 hours
-    blk.minCapex        = pyo.Param(initialize=5000.0, mutable=True)  # minimum capex
+    blk.costReference   = pyo.Param(initialize=_getParam('Cost Reference', 254842.0))    # $
+    blk.volumeReference = pyo.Param(initialize=_getParam('Volume Reference', 249.83718))  # m3
+    blk.capexFactor     = pyo.Param(initialize=_getParam('Capex Factor', 0.6))
+    blk.storageTimeHrs  = pyo.Param(initialize=48.0, mutable=True)
+    blk.minCapex        = pyo.Param(initialize=5000.0, mutable=True)
+    blk.productDensity  = pyo.Param(initialize=_getParam('Product Density', 1200.0), mutable=True)  # kg/m3, sizing only
 
-    # Fixed physical estimate of the stored product's bulk density, solely for capex
-    blk.productDensity  = pyo.Param(initialize=_get_param('Product Density', 1200.0), mutable=True)  # kg/m3
+    streamTools.addStream(blk, 'inlet')
+    streamTools.addStream(blk, 'outlet')
+    streamTools.connectStreams(blk, 'passBalance', blk.inlet, blk.outlet)
 
-    # -------------------- Primary state variables  --------------------
-    blk.productMassFlowIn  = pyo.Var(initialize=1.0, within=pyo.NonNegativeReals, bounds=(0, None))  # kg/s
-    blk.productMassFlowOut = pyo.Var(initialize=1.0, within=pyo.NonNegativeReals, bounds=(0, None))  # kg/s
-    blk.tankVolume         = pyo.Var(initialize=100, within=pyo.NonNegativeReals, bounds=(0, None))  # m3
+    blk.productMassFlowIn = pyo.Expression(expr=blk.inlet.totalMass)     # kg/s
+    blk.productMassFlowOut = pyo.Expression(expr=blk.outlet.totalMass)   # kg/s
 
-    # Capital Cost
-    blk.capex = blk.minCapex + 1.64 * blk.costReference * (blk.tankVolume / blk.volumeReference) ** blk.capexFactor
+    blk.tankVolume = pyo.Var(initialize=100.0, within=pyo.NonNegativeReals)  # m3
+    blk.storageTankVolume = pyo.Constraint(
+        expr=blk.tankVolume == blk.storageTimeHrs * 3600.0 * (blk.productMassFlowIn / blk.productDensity)
+    )
 
-    # Operating Cost (zero for storage tank)
+    blk.capex = pyo.Expression(
+        expr=blk.minCapex + 1.64 * blk.costReference * (blk.tankVolume / blk.volumeReference) ** blk.capexFactor
+    )
     blk.opex = pyo.Expression(expr=0.0)
 
-    # Tank volume computation -- sized for storageTimeHrs of product storage. 
-    def storageTankVolumeRule(b):
-        return b.tankVolume == b.storageTimeHrs * 3600.0 * (b.productMassFlowIn / b.productDensity)  # unit is m3
-    blk.storageTankVolume = pyo.Constraint(rule=storageTankVolumeRule)
-
-    # Material Balance (pure mass balance, no density)
-    def materialBalance(b):
-        return b.productMassFlowOut == b.productMassFlowIn  # unit is kg/s
-    blk.materialBalance = pyo.Constraint(rule=materialBalance)
+    return blk
