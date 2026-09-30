@@ -5,14 +5,6 @@
 #               Streams: inlet -> outlet (liquid side)                        #
 #               Gas side: CO2 feed, NH3 carrier gas (from the stripper)       #
 #                                                                             #
-#               - absorbed NH3 adds to TAN; dissolved orgN passes through     #
-#               - live product pH from the carbonate/ammonium charge balance  #
-#                 (TAN only; orgN carries no charge here)                     #
-#               - CO2 dose (co2Dosing, active by default):                    #
-#                   CO2 = [free OH- (freeOhMolPerL x liquid volume)           #
-#                          + inlet TAN + absorbed NH3] / 2                    #
-#                 deactivate co2Dosing to set the CO2 feed from the flowsheet #
-#               - absorbed gas mass is neglected in the liquid mass balance   #
 #                                                                             #
 # Input:        - model : Pyomo concrete model                                #
 #               - blockName : block name                                      #
@@ -64,7 +56,9 @@ def sparger(model, blockName, paramsKey='Combined Sparger'):
     blk.useAmmoniaSpeciation = pyo.Param(initialize=1.0, mutable=True)
     blk.co2TransferFraction = pyo.Param(initialize=1.0, mutable=True)
     blk.nh3TransferFraction = pyo.Param(initialize=1.0, mutable=True)
-    blk.freeOhMolPerL = pyo.Param(initialize=0.1, mutable=True)   # mol/L, pH 13
+    blk.targetpH = pyo.Param(initialize=8.0, mutable=True)                      # outlet pH spec
+    blk.spectatorPrecipFrac = pyo.Param(initialize=1.0, mutable=True)           # fraction of Z leaving as CaCO3
+    blk.alkalinityBufferMolPerM3 = pyo.Param(initialize=20.0, mutable=True)     # mol/m3, same as receiving tank
 
     blk.R = pyo.Param(initialize=8.314462618)
     blk.barToPa = pyo.Param(initialize=1e5)
@@ -72,7 +66,7 @@ def sparger(model, blockName, paramsKey='Combined Sparger'):
     blk.molwtN = pyo.Param(initialize=streamTools.molwtN)          # kg/mol
 
     blk.minCapex = pyo.Param(initialize=30000.0, mutable=True)
-    blk.co2CostPerKg = pyo.Param(initialize=0.60, mutable=True)    # $/kg CO2
+    blk.co2CostPerKg = pyo.Param(initialize=0.60, mutable=True)    # $/kg CO2 (upper-bound proxy)
     blk.molwtCO2 = pyo.Param(initialize=0.04401, mutable=True)     # kg/mol
 
     # -------------------- Streams --------------------
@@ -114,25 +108,38 @@ def sparger(model, blockName, paramsKey='Combined Sparger'):
         ['liquid', 'orgSolids', 'caoSolids', 'solidN', 'solidP', 'solidK', 'orgN', 'liqP', 'liqK', 'ca', 'mg']
     )
 
-    # -------------------- CO2 dosing --------------------
-    blk.freeOhMolPerS = pyo.Expression(expr=blk.freeOhMolPerL * blk.liquidVolFlowIn * 1000.0)   # mol/s
-    blk.inletTanMolPerS = pyo.Expression(expr=sIn.flow['tan'] / blk.molwtN)                    # mol/s
-    blk.totalAcidEqPerS = pyo.Expression(expr=blk.freeOhMolPerS + blk.inletTanMolPerS + blk.nh3TransferredMolS)
-    blk.co2RequiredMolS = pyo.Expression(expr=blk.totalAcidEqPerS / 2.0)   # 2 eq/mol basis
-    blk.co2Dosing = pyo.Constraint(expr=blk.co2GasMolFlowIn == blk.co2RequiredMolS)
-
-    # -------------------- Live product pH --------------------
-    blk.hOut = pyo.Var(initialize=1e-2, bounds=(1e-8, 1e6), within=pyo.NonNegativeReals)    # mol/m3
-    blk.ohOut = pyo.Var(initialize=1e-2, bounds=(1e-8, 1e10), within=pyo.NonNegativeReals)  # mol/m3
+    # -------------------- Carbonate / ammonium chemistry --------------------
     blk.ka1 = pyo.Param(initialize=10 ** (-6.35), mutable=True)
     blk.ka2 = pyo.Param(initialize=10 ** (-10.33), mutable=True)
     blk.kaNH4 = pyo.Expression(expr=10 ** (-blk.pKaNH4))
 
-    blk.carbonTotalConc = pyo.Expression(expr=blk.co2TransferredMolS / (blk.liquidVolFlowOut * 1000.0 + 1e-12))  # mol/L
+    # Inlet spectator charge (mol/L): strong-base excess left by lime conditioning
+    blk.hInReal = pyo.Expression(expr=10 ** (-sIn.pH))                     # mol/L
+    blk.ohInReal = pyo.Expression(expr=10 ** (sIn.pH - 14.0))              # mol/L
+    blk.tanInConc = pyo.Expression(expr=sIn.flow['tan'] / blk.molwtN / (blk.liquidVolFlowIn * 1000.0 + 1e-12))   # mol/L
+    blk.nh4InConc = pyo.Expression(
+        expr=blk.useAmmoniaSpeciation * blk.tanInConc * blk.hInReal / (blk.hInReal + blk.kaNH4 + 1e-30)
+    )
+    blk.spectatorChargeIn = pyo.Expression(expr=blk.ohInReal - blk.hInReal - blk.nh4InConc)   # mol/L
+    blk.spectatorMolPerS = pyo.Expression(expr=blk.spectatorChargeIn * blk.liquidVolFlowIn * 1000.0)   # eq/s
+
+    # CaCO3 precipitation of the lime-derived spectator (Ca2+ + CO3 2- -> CaCO3)
+    blk.caco3PrecipMolS = pyo.Expression(expr=blk.spectatorPrecipFrac * blk.spectatorMolPerS / 2.0)   # mol/s
+    blk.dissolvedSpectatorConc = pyo.Expression(
+        expr=(1.0 - blk.spectatorPrecipFrac) * blk.spectatorMolPerS / (blk.liquidVolFlowOut * 1000.0 + 1e-12)
+        + blk.alkalinityBufferMolPerM3 / 1000.0
+    )  # mol/L
+
+    blk.dissolvedCarbonMolS = pyo.Expression(expr=blk.co2TransferredMolS - blk.caco3PrecipMolS)   # mol/s
+    blk.dissolvedCarbonNonNegative = pyo.Constraint(expr=blk.dissolvedCarbonMolS >= 0.0)
+    blk.carbonTotalConc = pyo.Expression(expr=blk.dissolvedCarbonMolS / (blk.liquidVolFlowOut * 1000.0 + 1e-12))  # mol/L
     blk.ammoniaTotalConc = pyo.Expression(
         expr=out.flow['tan'] / blk.molwtN / (blk.liquidVolFlowOut * 1000.0 + 1e-12)
     )  # mol/L, TAN only
 
+    # -------------------- Outlet pH --------------------
+    blk.hOut = pyo.Var(initialize=1e-5, bounds=(1e-8, 1e6), within=pyo.NonNegativeReals)    # mol/m3
+    blk.ohOut = pyo.Var(initialize=1e-3, bounds=(1e-8, 1e10), within=pyo.NonNegativeReals)  # mol/m3
     blk.phDef = pyo.Constraint(expr=10 ** (3 - out.pH) == blk.hOut)
     blk.waterEq = pyo.Constraint(expr=blk.hOut * blk.ohOut == 1e-8)
     blk.hReal = pyo.Expression(expr=blk.hOut / 1000.0)    # mol/L
@@ -145,9 +152,13 @@ def sparger(model, blockName, paramsKey='Combined Sparger'):
         expr=blk.useAmmoniaSpeciation * blk.ammoniaTotalConc * blk.hReal / (blk.hReal + blk.kaNH4 + 1e-30)
     )
     blk.chargeBalance = pyo.Constraint(
-        expr=blk.hReal + blk.nh4Conc == blk.ohReal + blk.hco3Conc + 2.0 * blk.co3Conc
+        expr=blk.dissolvedSpectatorConc + blk.hReal + blk.nh4Conc == blk.ohReal + blk.hco3Conc + 2.0 * blk.co3Conc
     )
     blk.pHOut = pyo.Expression(expr=out.pH)
+    blk.nh3FreeFracOut = pyo.Expression(expr=blk.kaNH4 / (blk.hReal + blk.kaNH4))
+
+    # CO2 dose: whatever brings the outlet to the target pH
+    blk.phSpec = pyo.Constraint(expr=out.pH == blk.targetpH)
 
     # Reporting in the old units (g-N/m3 of liquid, TAN)
     blk.nitrogenConcIn = pyo.Expression(expr=1000.0 * sIn.flow['tan'] / (blk.liquidVolFlowIn + 1e-12))

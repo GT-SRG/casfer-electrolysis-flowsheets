@@ -9,8 +9,8 @@
 #                                                                             #
 #              Every unit carries the full component stream (streamTools):   #
 #              this script only connects outlets to inlets, sets targets,    #
-#              and assembles the cost objective. The CO2 dose is computed    #
-#              inside sparger.py (co2Dosing).                                 #
+#              and assembles the cost objective. The CO2 dose is set inside  #
+#              sparger.py by the outlet pH spec (targetpH, default 8).        #
 #------------------------------------------------------------------------------
 
 import os
@@ -147,7 +147,9 @@ def printResults(model):
     print('================ COMBINED SPARGER =====================')
     print('CO2 in (mol/s):', v(model.sg.co2GasMolFlowIn), ' CO2 (kg/day):', v(model.sg.co2MassFlowIn) * 86400,
           ' NH3 transferred (mol/s):', v(model.sg.nh3TransferredMolS))
-    print('Product pH (live, TAN/carbonate system only):', v(model.sg.outlet.pH))
+    print('Spectator charge in (eq/s):', v(model.sg.spectatorMolPerS), ' CaCO3 precipitated (kg/day):', v(model.sg.caco3PrecipMolS) * 0.10009 * 86400,
+          ' dissolved C (mol/L):', v(model.sg.carbonTotalConc))
+    print('Product pH (spec):', v(model.sg.outlet.pH), ' free NH3 fraction of TAN:', v(model.sg.nh3FreeFracOut))
     print('Tank volume (m3):', v(model.sg.tankVolume), ' mixing / blower (kW):', v(model.sg.mixingPower), v(model.sg.blowerPower))
     print('================ PERMEATE NEUTRALIZATION ==============')
     print('H2SO4 (kg/day, pure):', v(model.nt.h2so4RequiredKgPerS) * 86400, ' inlet pH:', v(model.nt.inlet.pH),
