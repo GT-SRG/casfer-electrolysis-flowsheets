@@ -1,150 +1,124 @@
 #------------------------------------------------------------------------------
 # function:     electrolyzer.py                                               #
-# Description:  Function to define electrolyzer model equations               #
-#               Material balances, component balances                         #
+# Description:  Electrolyzer: liberates part of the solid-bound N into the    #
+#               liquid phase. Bulk mass, solids, P, K, Ca, Mg pass through.   #
 #                                                                             #
+#               Streams: inlet -> outlet                                      #
+#                                                                             #
+#               N transformation:                                             #
+#                 liberated = solidsNToLiquidFrac x inlet solidN              #
+#                 TAN share of liberated = liberatedTanFrac (default 0.0:     #
+#                 all liberated N is organic, so liquid TAN comes only from   #
+#                 the feed); the rest becomes dissolved orgN.                 #
+#               Volatilization/oxidation loss (nitrogenLossFraction) acts on  #
+#               TAN only; orgN is non-volatile (orgNLossFraction, default 0). #
 #                                                                             #
 # Input:        - m : Pyomo concrete model                                    #
 #                                                                             #
-# Output:       - m with all model equations                                  #
-#                                                                             #
+# Output:       - m.el                                                        #
 #------------------------------------------------------------------------------
 
 import pyomo.environ as pyo
 try:
     from . import getParams
+    from . import streamTools
 except ImportError:
     import getParams
+    import streamTools
+
 
 def electrolyzer(m):
 
     m.el = pyo.Block()
+    blk = m.el
 
-    # Load parameters for electrolyzer from getParams
     electrolyzerParams = getParams.params['Electrolyzer']
 
-    m.el.residenceTime    = pyo.Param(initialize = electrolyzerParams['Residence Time'])   # s
-    m.el.costReference    = pyo.Param(initialize = electrolyzerParams['Cost Reference'])    # $/m2
-    m.el.areaReference    = pyo.Param(initialize = electrolyzerParams['Area Reference'])    # m2
-    m.el.capexFactor      = pyo.Param(initialize = electrolyzerParams['Capex Factor'])      # dimensionless
-    m.el.SEC              = pyo.Param(initialize = electrolyzerParams['Specific Energy Consumption']) # kWh/kg-N
+    blk.residenceTime = pyo.Param(initialize=electrolyzerParams['Residence Time'])     # s
+    blk.costReference = pyo.Param(initialize=electrolyzerParams['Cost Reference'])     # $/m2
+    blk.areaReference = pyo.Param(initialize=electrolyzerParams['Area Reference'])     # m2
+    blk.capexFactor   = pyo.Param(initialize=electrolyzerParams['Capex Factor'])
+    blk.SEC           = pyo.Param(initialize=electrolyzerParams['Specific Energy Consumption'])  # kWh/kg-N (solid-bound N processed)
 
-    # -------------------- Primary state variables --------------------
-    m.el.sludgeMassFlowIn  = pyo.Var(initialize = 10.0, within = pyo.NonNegativeReals, bounds = (0, None))  # kg/s
-    m.el.sludgeMassFlowOut = pyo.Var(initialize = 0, within = pyo.NonNegativeReals, bounds = (0, None))  # kg/s
-    m.el.nitrogenFlowOut   = pyo.Var(initialize = 0, within = pyo.NonNegativeReals, bounds = (0, None))  # kg-N/s
-    m.el.phosphorusFlowOut = pyo.Var(initialize = 0, within = pyo.NonNegativeReals, bounds = (0, None))  # kg-P/s
-    m.el.sludgeTSSin       = pyo.Var(initialize = 0.01, within = pyo.NonNegativeReals, bounds = (0, None))  # fraction
-    m.el.sludgeTSSout      = pyo.Var(initialize = 0.05, within = pyo.NonNegativeReals, bounds = (0, 1))  # fraction
-    m.el.area              = pyo.Var(initialize = 5, within=pyo.NonNegativeReals)  # m2
-    m.el.nitrogenConcIn    = pyo.Var(initialize = 300.0, within = pyo.NonNegativeReals)  # g-N/m3 (= ppm)
-    m.el.nitrogenConcOut   = pyo.Var(initialize = 600.0, within = pyo.NonNegativeReals)  # g-N/m3 (= ppm)
-    m.el.sludgepHIn        = pyo.Var(initialize = 7, within = pyo.NonNegativeReals, bounds = (0, 14))  # pH of sludge in
-    m.el.sludgepHOut       = pyo.Var(initialize = 7, within = pyo.NonNegativeReals, bounds = (0, 14))  # pH of sludge out
+    # N liberation
+    blk.solidsNToLiquidFrac  = pyo.Param(initialize=0.219, mutable=True)  # fraction of solidN liberated
+    blk.liberatedTanFrac     = pyo.Param(initialize=0.0, mutable=True)    # TAN share of liberated N
+    blk.nitrogenLossFraction = pyo.Param(initialize=0.05, mutable=True)   # fraction of liquid TAN lost (volatilization + oxidation)
+    blk.orgNLossFraction     = pyo.Param(initialize=0.0, mutable=True)    # fraction of dissolved orgN lost
 
-    # Composition-resolved solids input 
-    m.el.sludgeSolidsMassFlowIn = pyo.Var(initialize = 1.0, within = pyo.NonNegativeReals)  # kg/s
-    m.el.solidsNMassFrac = pyo.Param(initialize=0.05, mutable=True)  # kg-N/kg-sludge-solids
-    # Fraction of solid-bound N liberated to the liquid phase during electrolysis
-    m.el.solidsNToLiquidFrac = pyo.Param(initialize=0.219, mutable=True)
+    # -------------------- Streams --------------------
+    streamTools.addStream(blk, 'inlet', initPH=13.0)
+    streamTools.addStream(blk, 'outlet', initPH=13.0)
+    sIn, out = blk.inlet, blk.outlet
 
-    # Dry solids throughput (kg/s) — used for sizing
-    m.el.sludgeOutDryBasis = pyo.Expression(expr=m.el.sludgeMassFlowOut * m.el.sludgeTSSout)  # kg/s
+    blk.area = pyo.Var(initialize=5.0, within=pyo.NonNegativeReals)  # m2
 
-    # --- Area sizing from experimental capacity basis (daily units) ---
-    m.el.sludgeOutDryBasis_kgPerDay = pyo.Expression(expr=m.el.sludgeOutDryBasis * 86400.0)
+    # -------------------- Nitrogen --------------------
+    blk.solidsNIn = pyo.Expression(expr=sIn.flow['solidN'])                          # kg-N/s
+    blk.liberatedN = pyo.Expression(expr=blk.solidsNToLiquidFrac * blk.solidsNIn)     # kg-N/s
+    blk.liberatedTan = pyo.Expression(expr=blk.liberatedTanFrac * blk.liberatedN)     # kg-N/s
+    blk.liberatedOrgN = pyo.Expression(expr=blk.liberatedN - blk.liberatedTan)        # kg-N/s
 
-    m.el.elCapacityKgDsPerM2PerBatch = pyo.Param(initialize=14.286, mutable=True)
-    m.el.batchDurationHr = pyo.Param(initialize=0.5, mutable=True)
-    m.el.cleaningDowntimeFrac = pyo.Param(initialize=0, mutable=True)
-    m.el.operationHoursPerDay = pyo.Param(initialize=24.0, mutable=True)
+    blk.tanAvailableForLoss = pyo.Expression(expr=sIn.flow['tan'] + blk.liberatedTan)                  # kg-N/s
+    blk.orgNAvailableForLoss = pyo.Expression(expr=sIn.flow['orgN'] + blk.liberatedOrgN)               # kg-N/s
+    blk.tanLost = pyo.Expression(expr=blk.nitrogenLossFraction * blk.tanAvailableForLoss)              # kg-N/s
+    blk.orgNLost = pyo.Expression(expr=blk.orgNLossFraction * blk.orgNAvailableForLoss)                # kg-N/s
+    blk.nitrogenLost = pyo.Expression(expr=blk.tanLost + blk.orgNLost)                                 # kg-N/s
 
-    m.el.batchesPerDay = pyo.Expression(
-        expr=m.el.operationHoursPerDay * (1.0 - m.el.cleaningDowntimeFrac) / m.el.batchDurationHr
+    blk.solidNBalance = pyo.Constraint(expr=out.flow['solidN'] == sIn.flow['solidN'] - blk.liberatedN)
+    blk.tanBalance = pyo.Constraint(expr=out.flow['tan'] == blk.tanAvailableForLoss - blk.tanLost)
+    blk.orgNBalance = pyo.Constraint(expr=out.flow['orgN'] == blk.orgNAvailableForLoss - blk.orgNLost)
+
+    # Everything else passes through unchanged
+    streamTools.passComponents(
+        blk, 'passBalance', sIn, out,
+        ['liquid', 'orgSolids', 'caoSolids', 'solidP', 'solidK', 'liqP', 'liqK', 'ca', 'mg']
+    )
+    blk.pHBalance = pyo.Constraint(expr=out.pH == sIn.pH)
+
+    # -------------------- Area sizing (bench capacity basis) --------------------
+    # Capacity is per kg of TOTAL dry solids leaving (organic + undissolved CaO)
+    blk.sludgeOutDryBasis = pyo.Expression(expr=out.solidsMass)                    # kg/s
+    blk.sludgeOutDryBasisKgPerDay = pyo.Expression(expr=blk.sludgeOutDryBasis * 86400.0)
+
+    blk.elCapacityKgDsPerM2PerBatch = pyo.Param(initialize=14.286, mutable=True)
+    blk.batchDurationHr = pyo.Param(initialize=0.5, mutable=True)
+    blk.cleaningDowntimeFrac = pyo.Param(initialize=0.0, mutable=True)
+    blk.operationHoursPerDay = pyo.Param(initialize=24.0, mutable=True)
+
+    blk.batchesPerDay = pyo.Expression(
+        expr=blk.operationHoursPerDay * (1.0 - blk.cleaningDowntimeFrac) / blk.batchDurationHr
+    )
+    blk.dailyCapacityPerM2 = pyo.Expression(expr=blk.elCapacityKgDsPerM2PerBatch * blk.batchesPerDay)
+    blk.elAreaRequired = pyo.Expression(expr=blk.sludgeOutDryBasisKgPerDay / (blk.dailyCapacityPerM2 + 1e-9))
+    blk.areaFromCapacity = pyo.Constraint(expr=blk.area == blk.elAreaRequired)
+
+    # -------------------- Component-based CAPEX --------------------
+    blk.stackUnitCost = pyo.Param(initialize=6000.0, mutable=True)        # $/m2
+    blk.stackCapex = pyo.Expression(expr=blk.stackUnitCost * blk.area)
+
+    blk.currentDensity = pyo.Param(initialize=30.0, mutable=True)          # A/m2
+    blk.powerSourceUnitCost = pyo.Param(initialize=20.0, mutable=True)     # $/A
+    blk.totalCurrent = pyo.Expression(expr=blk.currentDensity * blk.area)
+    blk.powerSourceCapex = pyo.Expression(expr=blk.powerSourceUnitCost * blk.totalCurrent)
+
+    blk.pumpUnitCost = pyo.Param(initialize=22000.0, mutable=True)         # $/pump
+    blk.areaPerPump = pyo.Param(initialize=3.0, mutable=True)              # m2/pump
+    blk.numPumps = pyo.Expression(expr=blk.area / blk.areaPerPump)
+    blk.pumpCapex = pyo.Expression(expr=blk.pumpUnitCost * blk.numPumps)
+
+    blk.tankPairCost = pyo.Param(initialize=8990.0, mutable=True)          # $/pair
+    blk.areaPerTankPair = pyo.Param(initialize=4.714, mutable=True)        # m2/pair
+    blk.numTankPairs = pyo.Expression(expr=blk.area / blk.areaPerTankPair)
+    blk.tankCapex = pyo.Expression(expr=blk.tankPairCost * blk.numTankPairs)
+
+    # 2 stacks per electrolyzer, 1.64x stack cost for balance-of-plant
+    blk.capex = pyo.Expression(
+        expr=2 * 1.64 * blk.stackCapex + blk.pumpCapex + blk.tankCapex + blk.powerSourceCapex
     )
 
-    m.el.dailyCapacityPerM2 = pyo.Expression(
-        expr=m.el.elCapacityKgDsPerM2PerBatch * m.el.batchesPerDay
-    )
+    # -------------------- OPEX --------------------
+    blk.power = pyo.Expression(expr=blk.SEC * blk.solidsNIn * 3600.0)                      # kW
+    blk.opex = pyo.Expression(expr=blk.power * m.elecPrice * (m.daysOperation / 3600.0))   # $ lifetime
 
-    m.el.elAreaRequired = pyo.Expression(
-        expr=m.el.sludgeOutDryBasis_kgPerDay / (m.el.dailyCapacityPerM2 + 1e-9)
-    )
-
-    m.el.areaFromCapacity = pyo.Constraint(expr=m.el.area == m.el.elAreaRequired)
-
-    # --- Component-based CAPEX ---
-    m.el.stackUnitCost = pyo.Param(initialize=6000.0, mutable=True)  # $/m2
-    m.el.stackCapex = pyo.Expression(expr=m.el.stackUnitCost * m.el.area)
-
-    m.el.currentDensity = pyo.Param(initialize=30.0, mutable=True)  # A/m2
-    m.el.powerSourceUnitCost = pyo.Param(initialize=20.0, mutable=True)  # $/A
-    m.el.totalCurrent = pyo.Expression(expr=m.el.currentDensity * m.el.area)
-    m.el.powerSourceCapex = pyo.Expression(expr=m.el.powerSourceUnitCost * m.el.totalCurrent)
-
-    m.el.pumpUnitCost = pyo.Param(initialize=22000.0, mutable=True)  # $/pump
-    m.el.areaPerPump = pyo.Param(initialize=3.0, mutable=True)  # m2 per pump
-    m.el.numPumps = pyo.Expression(expr=m.el.area / m.el.areaPerPump)
-    m.el.pumpCapex = pyo.Expression(expr=m.el.pumpUnitCost * m.el.numPumps)
-
-    m.el.tankPairCost = pyo.Param(initialize=8990.0, mutable=True)  # $/pair
-    m.el.areaPerTankPair = pyo.Param(initialize=4.714, mutable=True)  # m2 per pair
-    m.el.numTankPairs = pyo.Expression(expr=m.el.area / m.el.areaPerTankPair)
-    m.el.tankCapex = pyo.Expression(expr=m.el.tankPairCost * m.el.numTankPairs)
-
-    m.el.capex = pyo.Expression(
-        expr= (2 * 1.64 *m.el.stackCapex + m.el.pumpCapex + m.el.tankCapex + m.el.powerSourceCapex) # 2 stacks per electrolyzer, 1.64x stack cost for balance-of-plant
-    )
-
-    # Operating Cost -- m.el.power in true kW (SEC[kWh/kg-N] * nitrogenFlowOut[kg-N/s] * 3600 = kW).
-    m.el.power = m.el.SEC * m.el.nitrogenFlowOut * 3600.0  # kW
-    m.el.opex = m.el.power * m.elecPrice * (m.daysOperation / 3600.0)  # $
-
-    # Material Balance (mass, complete retention -- no solids captured/lost here)
-    def materialBalance(blk):
-        return blk.sludgeMassFlowOut == blk.sludgeMassFlowIn
-    m.el.materialBalance = pyo.Constraint(rule=materialBalance)
-
-    # Nitrogen Balance 
-    def nitrogenBalance(blk):
-        return blk.nitrogenFlowOut == blk.solidsNMassFrac * blk.sludgeSolidsMassFlowIn
-    m.el.nitrogenBalance = pyo.Constraint(rule=nitrogenBalance)
-
-    # Phosphorus Balance 
-    def phosphorusBalance(blk):
-        return blk.phosphorusFlowOut == 0.0179*blk.sludgeMassFlowIn
-    m.el.phosphorusBalance = pyo.Constraint(rule=phosphorusBalance)
-
-    # Sludge TSS Balance
-    def sludgeTSSBalance(blk):
-        return blk.sludgeTSSout == blk.sludgeTSSin
-    m.el.sludgeTSSBalance = pyo.Constraint(rule=sludgeTSSBalance)
-
-    # Liquid-phase nitrogen balance, expressed as explicit N mass conservation:
-    # dissolved N in + liberated solids-N == dissolved N out
-    m.el.liquidVolFlowIn  = pyo.Expression(expr=(m.el.sludgeMassFlowIn  * (1.0 - m.el.sludgeTSSin))  / m.model().liquidDensity)
-    m.el.liquidVolFlowOut = pyo.Expression(expr=(m.el.sludgeMassFlowOut * (1.0 - m.el.sludgeTSSout)) / m.model().liquidDensity)
-    m.el.nitrogenMassFlowInLiquid_kgN_s  = pyo.Expression(expr=m.el.nitrogenConcIn  * m.el.liquidVolFlowIn  / 1000.0)
-    m.el.nitrogenMassFlowOutLiquid_kgN_s = pyo.Expression(expr=m.el.nitrogenConcOut * m.el.liquidVolFlowOut / 1000.0)
-
-    # -------------------------------------------------------------------
-    # Ammonia volatilization 
-    m.el.nitrogenLossFraction = pyo.Param(initialize=0.05, mutable=True)  # combined volatilization + oxidation
-
-    m.el.nitrogenMassFlowAvailForLoss_kgN_s = pyo.Expression(
-        expr=m.el.nitrogenMassFlowInLiquid_kgN_s + m.el.solidsNToLiquidFrac * m.el.nitrogenFlowOut
-    )
-    m.el.nitrogenFlowVolatilized_kgN_s = pyo.Expression(
-        expr=m.el.nitrogenLossFraction * m.el.nitrogenMassFlowAvailForLoss_kgN_s
-    )
-
-    # Liquid-phase nitrogen balance, expressed as explicit N mass conservation:
-    # dissolved N in + liberated solids-N == dissolved N out + lost N.
-    def liquidNitrogenBalance(blk):
-        return (blk.nitrogenMassFlowInLiquid_kgN_s + blk.solidsNToLiquidFrac * blk.nitrogenFlowOut
-                == blk.nitrogenMassFlowOutLiquid_kgN_s + blk.nitrogenFlowVolatilized_kgN_s)
-    m.el.liquidNitrogenBalance = pyo.Constraint(rule=liquidNitrogenBalance)
-
-    def pHBalance(blk):
-        return blk.sludgepHOut == blk.sludgepHIn
-    m.el.pHBalance = pyo.Constraint(rule=pHBalance)
+    return blk

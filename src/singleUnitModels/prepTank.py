@@ -1,169 +1,146 @@
 #------------------------------------------------------------------------------
 # function:     prepTank.py                                                   #
-# Description:  Function to define preparation tank model equations           #
-#               Material balances, component balances                         # 
+# Description:  Preparation tank: blends dewatered sludge and centrate,       #
+#               doses CaO to pH 13, optional dilution water.                 #
+#                                                                             #
+#               Streams: sludgeIn, centrateIn -> outlet                       #
+#                                                                             #
+#               CaO dose (two-part):                                          #
+#                 sludge  : caoPerKgDS x organic dry solids of sludgeIn       #
+#                 centrate: (TAN + residual OH- + alkalinity buffer) / 2      #
+#               CaO split: baseSolubility x outlet liquid volume dissolves    #
+#               (reports to liquid mass), the rest stays as caoSolids.        #
+#               Dissolved Ca/Mg released on conditioning (origin-based):      #
+#                 Ca = dissolvedCaPerKgCaO x total CaO                        #
+#                 Mg = dissolvedMgPerKgDS  x organic dry solids of sludgeIn   #
+#               Dissolved P co-precipitates with Ca at pH 13 and moves to     #
+#               solidP (pPrecipitationFrac, default 1.0).                     #
+#               N species are not transformed here.                           #
 #                                                                             #
 # Input:        - m : Pyomo concrete model                                    #
 #                                                                             #
-# Output:       - m with all preparation tank model equations                 #
-#                                                                             #
+# Output:       - m.pt                                                        #
 #------------------------------------------------------------------------------
 
 import pyomo.environ as pyo
 try:
     from . import getParams
+    from . import streamTools
 except ImportError:
     import getParams
+    import streamTools
+
 
 def prepTank(m):
 
     m.pt = pyo.Block()
+    blk = m.pt
 
-    # Load parameters for prep tank from getParams
     prepTankParams = getParams.params['Preparation Tank']
 
-    m.pt.residenceTime            = pyo.Param(initialize = prepTankParams['Residence Time']) # hr
-    m.pt.costReference            = pyo.Param(initialize = prepTankParams['Cost Reference']) # $/m3
-    m.pt.volumeReference          = pyo.Param(initialize = prepTankParams['Volume Reference']) # m3
-    m.pt.capexFactor              = pyo.Param(initialize = prepTankParams['Capex Factor'])   # dimensionless
-    m.pt.baseCost                 = pyo.Param(initialize = prepTankParams['Base Cost'])       # $/kg
-    m.pt.baseDensity              = pyo.Param(initialize = prepTankParams['Base Density'])    # kg/m3
-    m.pt.baseSolubility           = pyo.Param(initialize = prepTankParams['Base Solubility'])  # kg/m3
-    m.pt.limeTankCostReference    = pyo.Param(initialize = prepTankParams['Lime Tank Cost'])    # $/m3
-    m.pt.limeTankVolumeReference  = pyo.Param(initialize = prepTankParams['Lime Tank Volume'])  # m3
-    m.pt.limeTankCapexFactor      = pyo.Param(initialize = prepTankParams['Lime Tank Capex Factor'])      # dimensionless
-    m.pt.sludgeTSSOutTarget       = pyo.Param(initialize = prepTankParams['Target TSS'], mutable=True)  # fraction
+    blk.residenceTime           = pyo.Param(initialize=prepTankParams['Residence Time'])        # s
+    blk.costReference           = pyo.Param(initialize=prepTankParams['Cost Reference'])        # $
+    blk.volumeReference         = pyo.Param(initialize=prepTankParams['Volume Reference'])      # m3
+    blk.capexFactor             = pyo.Param(initialize=prepTankParams['Capex Factor'])
+    blk.baseCost                = pyo.Param(initialize=prepTankParams['Base Cost'])             # $/kg CaO
+    blk.baseDensity             = pyo.Param(initialize=prepTankParams['Base Density'])          # kg/m3
+    blk.baseSolubility          = pyo.Param(initialize=prepTankParams['Base Solubility'])       # kg/m3
+    blk.limeTankCostReference   = pyo.Param(initialize=prepTankParams['Lime Tank Cost'])        # $
+    blk.limeTankVolumeReference = pyo.Param(initialize=prepTankParams['Lime Tank Volume'])      # m3
+    blk.limeTankCapexFactor     = pyo.Param(initialize=prepTankParams['Lime Tank Capex Factor'])
+    blk.sludgeTSSOutTarget      = pyo.Param(initialize=prepTankParams['Target TSS'], mutable=True)
 
-    # --- Parameters for two-part CaO calculation ---
-    # A) Dewatered sludge stream: experimental ratio per kg DRY SOLIDS
-    m.pt.caoPerKgDS        = pyo.Param(initialize=0.224, mutable=True)    # kg CaO / kg dry solids
-    m.pt.sludgeOnlyDensity = pyo.Param(initialize=1200.0, mutable=True)   # kg/m3 (dewatered sludge, physical const)
-    m.pt.sludgeOnlyTSS     = pyo.Param(initialize=0.20, mutable=True)    # fraction (dewatered sludge TS)
-    m.pt.centrateDensity   = pyo.Param(initialize=1000.0, mutable=True)   # kg/m3 (physical const)
+    # CaO dosing basis
+    blk.caoPerKgDS       = pyo.Param(initialize=0.224, mutable=True)   # kg CaO / kg organic dry solids
+    blk.alkalinityBuffer = pyo.Param(initialize=20.0, mutable=True)    # mol OH- / m3 centrate
+    blk.targetOHConc     = pyo.Param(initialize=100.0, mutable=True)   # mol OH- / m3 at pH 13
+    blk.mwCaO            = pyo.Param(initialize=0.05608)               # kg/mol
+    blk.targetpH         = pyo.Param(initialize=13.0, mutable=True)
 
-    # B) Centrate stream: pH chemistry
-    m.pt.alkalinityBuffer  = pyo.Param(initialize=20.0, mutable=True)   # mol OH- / m3 liquid
-    m.pt.targetOHConc      = pyo.Param(initialize=100.0, mutable=True)  # mol OH- / m3 at pH 13
-    m.pt.mwCaO             = pyo.Param(initialize=0.05608)               # kg/mol
+    # Dissolved species released on conditioning
+    blk.dissolvedCaPerKgCaO = pyo.Param(initialize=0.0468, mutable=True)   # kg-Ca / kg-CaO
+    blk.dissolvedMgPerKgDS  = pyo.Param(initialize=0.00350, mutable=True)  # kg-Mg / kg organic DS
+    blk.pPrecipitationFrac  = pyo.Param(initialize=1.0, mutable=True)      # fraction of dissolved P -> solidP
 
-    m.pt.minCapex = pyo.Param(initialize=10000.0, mutable=True)
-    m.pt.minLimeTankCapex = pyo.Param(initialize=5000.0, mutable=True)
+    blk.minCapex         = pyo.Param(initialize=10000.0, mutable=True)
+    blk.minLimeTankCapex = pyo.Param(initialize=5000.0, mutable=True)
 
-    # Sub-stream flows, linked from flowsheet level
-    m.pt.sludgeOnlyFlow_m3s = pyo.Var(initialize=0.001, within=pyo.NonNegativeReals)  # m3/s, dewatered sludge only
-    m.pt.centrateFlow_m3s   = pyo.Var(initialize=0.001, within=pyo.NonNegativeReals)  # m3/s, centrate only
+    # -------------------- Streams --------------------
+    streamTools.addStream(blk, 'sludgeIn')
+    streamTools.addStream(blk, 'centrateIn')
+    streamTools.addStream(blk, 'outlet', initPH=13.0)
+    sIn, cIn, out = blk.sludgeIn, blk.centrateIn, blk.outlet
 
-    # -------------------- Primary state variables --------------------
-    m.pt.sludgeMassFlowIn  = pyo.Var(initialize = 10.0, within = pyo.NonNegativeReals, bounds = (0, None))  # kg/s
-    m.pt.waterMassFlowIn   = pyo.Var(initialize = 10.0, within = pyo.NonNegativeReals, bounds = (0, None))  # kg/s (decision var)
-    m.pt.sludgeTSSin       = pyo.Var(initialize = 0.01, within = pyo.NonNegativeReals, bounds = (0, None))  # fraction
-    m.pt.sludgeMassFlowOut = pyo.Var(initialize = 0, within = pyo.NonNegativeReals, bounds = (0, None))  # kg/s
-    m.pt.sludgepHOut       = pyo.Var(initialize = 7, within = pyo.NonNegativeReals, bounds = (0, 14))
-    m.pt.sludgeTSSout      = pyo.Var(initialize = 0.05, within = pyo.NonNegativeReals, bounds = (0, 1))  # fraction
-    m.pt.tankVolume        = pyo.Var(initialize = 50, within = pyo.NonNegativeReals, bounds = (0, None))  # m3
-    m.pt.limeTankVolume    = pyo.Var(initialize = 20, within = pyo.NonNegativeReals, bounds = (0, None))  # m3
-    m.pt.nitrogenConcIn    = pyo.Var(initialize = 750.0, within = pyo.NonNegativeReals)  # g-N/m3 (= ppm)
-    m.pt.nitrogenConcOut   = pyo.Var(initialize = 300.0, within = pyo.NonNegativeReals)  # g-N/m3 (= ppm)
+    blk.waterMassFlowIn = pyo.Var(initialize=0.0, within=pyo.NonNegativeReals)  # kg/s dilution water (decision)
+    blk.tankVolume      = pyo.Var(initialize=50.0, within=pyo.NonNegativeReals)  # m3
+    blk.limeTankVolume  = pyo.Var(initialize=20.0, within=pyo.NonNegativeReals)  # m3
 
-    # --- Two-part CaO calculation ---
-    m.pt.sludgeDrySolidsMassFlow_kgPerS = pyo.Expression(
-        expr=m.pt.sludgeOnlyFlow_m3s * m.pt.sludgeOnlyDensity * m.pt.sludgeOnlyTSS
+    # -------------------- CaO dose --------------------
+    blk.sludgeDrySolidsFlow = pyo.Expression(expr=sIn.flow['orgSolids'])                   # kg/s
+    blk.caoForSludge = pyo.Expression(expr=blk.caoPerKgDS * blk.sludgeDrySolidsFlow)       # kg/s
+
+    blk.centrateOhDemandTan = pyo.Expression(expr=cIn.flow['tan'] / streamTools.molwtN)   # mol/s
+    blk.centrateOhDemandResidual = pyo.Expression(expr=blk.targetOHConc * cIn.liquidVol)    # mol/s
+    blk.centrateOhDemandAlkalinity = pyo.Expression(expr=blk.alkalinityBuffer * cIn.liquidVol)  # mol/s
+    blk.centrateTotalOhDemand = pyo.Expression(
+        expr=blk.centrateOhDemandTan + blk.centrateOhDemandResidual + blk.centrateOhDemandAlkalinity
     )
-    m.pt.caoForSludge_kgPerS = pyo.Expression(
-        expr=m.pt.caoPerKgDS * m.pt.sludgeDrySolidsMassFlow_kgPerS
+    blk.caoForCentrate = pyo.Expression(expr=(blk.centrateTotalOhDemand / 2.0) * blk.mwCaO)  # kg/s, 1 CaO -> 2 OH-
+
+    blk.totalCaO = pyo.Expression(expr=blk.caoForSludge + blk.caoForCentrate)  # kg/s
+
+    # Dissolved CaO
+    blk.dissolvedCaO = pyo.Expression(expr=blk.baseSolubility * out.liquidVol)  # kg/s
+    blk.undissolvedCaO = pyo.Expression(expr=blk.totalCaO - blk.dissolvedCaO)    # kg/s
+
+    # -------------------- Component balances --------------------
+    def _mixed(c):
+        return sIn.flow[c] + cIn.flow[c]
+
+    blk.liquidBalance = pyo.Constraint(
+        expr=out.flow['liquid'] == _mixed('liquid') + blk.waterMassFlowIn + blk.dissolvedCaO
     )
+    blk.orgSolidsBalance = pyo.Constraint(expr=out.flow['orgSolids'] == _mixed('orgSolids'))
+    blk.caoSolidsBalance = pyo.Constraint(expr=out.flow['caoSolids'] == _mixed('caoSolids') + blk.undissolvedCaO)
 
-    m.pt.centrateOhDemandNH4 = pyo.Expression(
-        expr=m.pt.nitrogenConcIn / 14.007 * m.pt.centrateFlow_m3s    # nitrogenConcIn in g-N/m3
+    blk.solidNBalance = pyo.Constraint(expr=out.flow['solidN'] == _mixed('solidN'))
+    blk.solidKBalance = pyo.Constraint(expr=out.flow['solidK'] == _mixed('solidK'))
+    blk.solidPBalance = pyo.Constraint(
+        expr=out.flow['solidP'] == _mixed('solidP') + blk.pPrecipitationFrac * _mixed('liqP')
     )
-    m.pt.centrateOhDemandResidual = pyo.Expression(
-        expr=m.pt.targetOHConc * m.pt.centrateFlow_m3s
+    blk.liqPBalance = pyo.Constraint(expr=out.flow['liqP'] == (1.0 - blk.pPrecipitationFrac) * _mixed('liqP'))
+
+    blk.tanBalance  = pyo.Constraint(expr=out.flow['tan'] == _mixed('tan'))
+    blk.orgNBalance = pyo.Constraint(expr=out.flow['orgN'] == _mixed('orgN'))
+    blk.liqKBalance = pyo.Constraint(expr=out.flow['liqK'] == _mixed('liqK'))
+    blk.caBalance   = pyo.Constraint(expr=out.flow['ca'] == _mixed('ca') + blk.dissolvedCaPerKgCaO * blk.totalCaO)
+    blk.mgBalance   = pyo.Constraint(expr=out.flow['mg'] == _mixed('mg') + blk.dissolvedMgPerKgDS * blk.sludgeDrySolidsFlow)
+
+    blk.pHConstr = pyo.Constraint(expr=out.pH == blk.targetpH)
+
+    # Optional outlet TSS target, OFF by default
+    blk.targetTSSConstr = pyo.Constraint(expr=out.solidsMass == blk.sludgeTSSOutTarget * out.totalMass)
+    blk.targetTSSConstr.deactivate()
+
+    # -------------------- Sizing --------------------
+    blk.feedBulkVolFlow = pyo.Expression(expr=sIn.bulkVol + cIn.bulkVol)          # m3/s
+    blk.waterVolFlowIn = pyo.Expression(expr=blk.waterMassFlowIn / 1000.0)         # m3/s
+    blk.baseVolFlowIn = pyo.Expression(expr=blk.totalCaO / blk.baseDensity)        # m3/s
+
+    blk.prepTankVolume = pyo.Constraint(
+        expr=blk.tankVolume == blk.residenceTime * (blk.feedBulkVolFlow + blk.waterVolFlowIn + blk.baseVolFlowIn)
     )
-    m.pt.centrateOhDemandAlkalinity = pyo.Expression(
-        expr=m.pt.alkalinityBuffer * m.pt.centrateFlow_m3s
+    blk.limeTankVolumeConstr = pyo.Constraint(expr=blk.limeTankVolume == blk.residenceTime * blk.baseVolFlowIn)
+
+    # -------------------- Costs --------------------
+    blk.capexTank = pyo.Expression(
+        expr=blk.minCapex + blk.costReference * (blk.tankVolume / blk.volumeReference) ** blk.capexFactor
     )
-    m.pt.centrateTotalOhDemand = pyo.Expression(
-        expr=m.pt.centrateOhDemandNH4 + m.pt.centrateOhDemandResidual + m.pt.centrateOhDemandAlkalinity
+    blk.capexLimeTank = pyo.Expression(
+        expr=blk.minLimeTankCapex
+        + blk.limeTankCostReference * (blk.limeTankVolume / blk.limeTankVolumeReference) ** blk.limeTankCapexFactor
     )
-    m.pt.caoForCentrate_kgPerS = pyo.Expression(
-        expr=(m.pt.centrateTotalOhDemand / 2.0) * m.pt.mwCaO   # 1 mol CaO -> 2 mol OH-
-    )
+    blk.capex = pyo.Expression(expr=1.64 * (blk.capexTank + blk.capexLimeTank))
+    blk.opex = pyo.Expression(expr=blk.baseCost * blk.totalCaO * m.daysOperation)  # $ lifetime, CaO only
 
-    m.pt.totalCaO_kgPerS = pyo.Expression(
-        expr=m.pt.caoForSludge_kgPerS + m.pt.caoForCentrate_kgPerS
-    )
-
-    # Capital Cost of prep tank and lime tank
-    m.pt.capexTank = m.pt.minCapex + m.pt.costReference*(m.pt.tankVolume/m.pt.volumeReference)**m.pt.capexFactor
-    m.pt.capexLimeTank = m.pt.minLimeTankCapex + m.pt.limeTankCostReference*(m.pt.limeTankVolume/m.pt.limeTankVolumeReference)**m.pt.limeTankCapexFactor
-
-    m.pt.capex = 1.64*(m.pt.capexTank + m.pt.capexLimeTank)
-
-    # Operating Cost (CaO chemical cost only; already mass-based)
-    m.pt.opex = m.pt.baseCost*m.pt.totalCaO_kgPerS*m.daysOperation
-
-    # -------------------- Sizing-only volumetric conversions --------------------
-    m.pt.sludgeVolFlowIn = pyo.Expression(expr = m.pt.sludgeMassFlowIn / m.model().sludgeDensity)  # m3/s
-    m.pt.waterVolFlowIn  = pyo.Expression(expr = m.pt.waterMassFlowIn / 1000.0)                    # m3/s (fixed water density)
-    m.pt.baseVolFlowIn   = pyo.Expression(expr = m.pt.totalCaO_kgPerS / m.pt.baseDensity)           # m3/s
-
-    def prepTankVolumeRule(blk):
-        return blk.tankVolume == blk.residenceTime*(blk.sludgeVolFlowIn + blk.waterVolFlowIn + blk.baseVolFlowIn)  # unit is m3
-    m.pt.prepTankVolume = pyo.Constraint(rule=prepTankVolumeRule)
-
-    def limeTankVolumeRule(blk):
-        return blk.limeTankVolume == blk.residenceTime*blk.baseVolFlowIn  # unit is m3
-    m.pt.limeTankVolumeConstr = pyo.Constraint(rule=limeTankVolumeRule)
-
-    # -------------------- True mass balance --------------------
-    def materialBalance(blk):
-        return blk.sludgeMassFlowOut == blk.sludgeMassFlowIn + blk.waterMassFlowIn + m.pt.totalCaO_kgPerS  # unit is kg/s
-    m.pt.materialBalance = pyo.Constraint(rule=materialBalance)
-
-    # Dry-solids mass flow in (kg/s) -- direct, no density round-trip
-    m.pt.massInlet = pyo.Expression(expr=m.pt.sludgeMassFlowIn * m.pt.sludgeTSSin)
-
-    # CaO solids: undissolved fraction contributes to outlet solids
-    m.pt.liquidVolFlowOut = pyo.Expression(
-        expr=(m.pt.sludgeMassFlowOut * (1.0 - m.pt.sludgeTSSout)) / m.model().liquidDensity
-    )
-    m.pt.dissolvedCaO_kgPerS = pyo.Expression(
-        expr=m.pt.baseSolubility * m.pt.liquidVolFlowOut
-    )
-    m.pt.baseSolidsFlow = pyo.Expression(
-        expr=m.pt.totalCaO_kgPerS - m.pt.dissolvedCaO_kgPerS
-    )
-
-    # Total solids in outlet = sludge solids + undissolved CaO solids
-    m.pt.totalOutletSolids = pyo.Expression(expr=m.pt.massInlet + m.pt.baseSolidsFlow)
-
-    # Composition-resolved solids outputs
-    m.pt.sludgeSolidsMassFlowOut = pyo.Expression(expr=m.pt.massInlet)      # kg/s, organic/sludge solids only
-    m.pt.caoSolidsMassFlowOut    = pyo.Expression(expr=m.pt.baseSolidsFlow) # kg/s, undissolved CaO solids only
-
-    # Outlet TSS from mass balance 
-    def outletTSSBalance(blk):
-        return blk.sludgeTSSout * blk.sludgeMassFlowOut == m.pt.totalOutletSolids
-    m.pt.outletTSSBalance = pyo.Constraint(rule=outletTSSBalance)
-
-    # Nitrogen balance, expressed as explicit N mass conservation 
-    m.pt.liquidVolFlowIn = pyo.Expression(
-        expr=(m.pt.sludgeMassFlowIn * (1.0 - m.pt.sludgeTSSin)) / m.model().liquidDensity
-    )
-    m.pt.nitrogenMassFlowIn_kgN_s  = pyo.Expression(expr=m.pt.nitrogenConcIn  * m.pt.liquidVolFlowIn  / 1000.0)
-    m.pt.nitrogenMassFlowOut_kgN_s = pyo.Expression(expr=m.pt.nitrogenConcOut * m.pt.liquidVolFlowOut / 1000.0)
-
-    def nitrogenBalance(blk):
-        return blk.nitrogenMassFlowIn_kgN_s == blk.nitrogenMassFlowOut_kgN_s
-    m.pt.nitrogenBalance = pyo.Constraint(rule=nitrogenBalance)
-
-    # Component Balance
-    def componentBalance(blk):
-        return blk.sludgepHOut == 13  
-    m.pt.componentBalance = pyo.Constraint(rule=componentBalance)
-
-    # Optional outlet TSS target — activate/deactivate from the flowsheet as needed
-    def targetTSSRule(blk):
-        return blk.sludgeTSSout == blk.sludgeTSSOutTarget
-    m.pt.targetTSSConstr = pyo.Constraint(rule=targetTSSRule)
-    m.pt.targetTSSConstr.deactivate()  # OFF by default
+    return blk
