@@ -1,26 +1,39 @@
 #------------------------------------------------------------------------------
 # function:     nanofiltration.py                                             #
-# Description:  Function to define nanofiltration (NF) / ion-selective        #
-#               membrane model equations.                                     #
+# Description:  Nanofiltration (bivalent removal) on a solids-free liquid.    #
 #                                                                             #
+#               Streams: inlet -> permeate (to GPM), retentate (reject)       #
+#                                                                             #
+#               - water recovery = permeate liquid / inlet liquid (>= target) #
+#               - Ca, Mg: constant observed rejection                         #
+#               - TAN: pH-dependent rejection R_NH4 x (1 - alpha_NH3)         #
+#               - dissolved K, P, orgN: constant rejection parameters         #
+#                 (placeholders, default 0; no NF data for these streams)     #
+#               - any solids entering (should be none) go to the retentate    #
 #                                                                             #
 # Input:        - m : Pyomo concrete model                                    #
 #                                                                             #
-# Output:       - m with all NF / selective-membrane model equations          #
+# Output:       - m.nf                                                        #
 #------------------------------------------------------------------------------
 
 import pyomo.environ as pyo
-
 try:
     from . import getParams
+    from . import streamTools
 except ImportError:
     import getParams
+    import streamTools
+
+
+rejectedSpecies = ['tan', 'ca', 'mg', 'liqK', 'liqP', 'orgN']
+osmoticSpecies = ['tan', 'ca', 'mg']
 
 
 def nf(m):
-    m.nf = pyo.Block()
 
-    # Load parameters if present in params.xlsx, otherwise use safe defaults.
+    m.nf = pyo.Block()
+    blk = m.nf
+
     nfParams = (
         getParams.params.get('Nanofiltration')
         or getParams.params.get('nf')
@@ -28,210 +41,105 @@ def nf(m):
         or {}
     )
 
-    # --- Membrane / hydraulic parameters ---
-    m.nf.membraneCost        = pyo.Param(initialize=nfParams.get('Membrane Cost', 500.0))           # $/m2
-    m.nf.membraneLp          = pyo.Param(initialize=nfParams.get('Hydraulic Permeability', 5.0))   # L/m2/h/bar
-    m.nf.pumpEfficiency      = pyo.Param(initialize=nfParams.get('Pump Efficiency', 0.75))          # fraction
-    m.nf.capexFactor         = pyo.Param(initialize=nfParams.get('Capex Factor', 1.0))              # dimensionless
-    m.nf.maxDeltaP           = pyo.Param(initialize=nfParams.get('Max Pressure Drop', 20.0), mutable=True)  # bar
-    m.nf.targetRecovery      = pyo.Param(initialize=nfParams.get('Target Recovery', 0.70), mutable=True)  # fraction
+    blk.membraneCost   = pyo.Param(initialize=nfParams.get('Membrane Cost', 500.0))            # $/m2
+    blk.membraneLp     = pyo.Param(initialize=nfParams.get('Hydraulic Permeability', 5.0))     # L/m2/h/bar
+    blk.pumpEfficiency = pyo.Param(initialize=nfParams.get('Pump Efficiency', 0.75))
+    blk.capexFactor    = pyo.Param(initialize=nfParams.get('Capex Factor', 1.0))
+    blk.maxDeltaP      = pyo.Param(initialize=nfParams.get('Max Pressure Drop', 20.0), mutable=True)  # bar
+    blk.targetRecovery = pyo.Param(initialize=nfParams.get('Target Recovery', 0.70), mutable=True)
+    blk.membraneReplFrac    = pyo.Param(initialize=nfParams.get('Membrane Replacement Fraction', 1.0 / 3.0), mutable=True)  # 1/yr
+    blk.membraneReplCostFac = pyo.Param(initialize=nfParams.get('Membrane Replacement Cost Factor', 1.0))
+    blk.minDrivingForce = pyo.Param(initialize=0.5, mutable=True)  # bar
 
-    # Membrane replacement: NF elements typically replaced every ~3 years.
-    m.nf.membraneReplFrac    = pyo.Param(initialize=nfParams.get('Membrane Replacement Fraction', 1.0/3.0), mutable=True)  # fraction/yr
-    m.nf.membraneReplCostFac = pyo.Param(initialize=nfParams.get('Membrane Replacement Cost Factor', 1.0))  # multiplier on membraneCost*area
-
-    # --- Observed (constant) rejection coefficients ---
-    # rejection R_i = 1 - C_permeate,i / C_feed,i  (fraction of species i retained)
-    m.nf.rejectionCa         = pyo.Param(initialize=nfParams.get('Ca Rejection', 0.93), mutable=True)          # fraction
-    m.nf.rejectionMg         = pyo.Param(initialize=nfParams.get('Mg Rejection', 0.88), mutable=True)          # fraction
-
-    # Monovalent (NH4+/TAN) rejection is pH-dependent via the ionic fraction
-    m.nf.rejectionNH4Intrinsic = pyo.Param(initialize=nfParams.get('NH4 Intrinsic Rejection', 0.90), mutable=True)  # fraction
-
-    # --- Osmotic pressure model: phi-corrected van 't Hoff, pi = phi * i * C * R * T ---
-    m.nf.osmoticCoeffCa  = pyo.Param(initialize=1.577, mutable=True)  # bar/(kg/m3)
-    m.nf.osmoticCoeffMg  = pyo.Param(initialize=2.601, mutable=True)  # bar/(kg/m3)
-    m.nf.osmoticCoeffTAN = pyo.Param(initialize=3.186, mutable=True)  # bar/(kg-N/m3)
-
-    # --- Inputs (link to upstream permeate) ---
-    m.nf.massFlowIn      = pyo.Var(initialize=10.0, within=pyo.NonNegativeReals, bounds=(0, None))  # kg/s
-    m.nf.concInTAN       = pyo.Var(initialize=1.0,  within=pyo.NonNegativeReals)  # kg-N/m3 (TAN, mostly NH4+ at NF permeate pH)
-    m.nf.concInCa        = pyo.Var(initialize=0.3,  within=pyo.NonNegativeReals)  # kg/m3 (dissolved Ca2+)
-    m.nf.concInMg        = pyo.Var(initialize=0.1,  within=pyo.NonNegativeReals)  # kg/m3 (dissolved Mg2+)
-    m.nf.pHIn            = pyo.Var(initialize=7.0,  within=pyo.NonNegativeReals, bounds=(0, 14))  # pH in
-
-    m.nf.pKaNH3 = pyo.Param(initialize=9.25, mutable=True)
-    m.nf.alphaIn = pyo.Expression(expr=1.0 / (1.0 + 10 ** (m.nf.pKaNH3 - m.nf.pHIn)))
-
-    # --- Outputs: permeate (to GPM, NH4+-rich) and retentate (divalent-rich reject) ---
-    m.nf.permeateMassFlow  = pyo.Var(initialize=8.0, within=pyo.NonNegativeReals, bounds=(0, None))  # kg/s
-    m.nf.retentateMassFlow = pyo.Var(initialize=2.0, within=pyo.NonNegativeReals, bounds=(0, None))  # kg/s
-    m.nf.concPermTAN       = pyo.Var(initialize=0.9,  within=pyo.NonNegativeReals)  # kg-N/m3
-    m.nf.concRetTAN        = pyo.Var(initialize=1.0,  within=pyo.NonNegativeReals)  # kg-N/m3
-    m.nf.concPermCa        = pyo.Var(initialize=0.03, within=pyo.NonNegativeReals)  # kg/m3
-    m.nf.concRetCa         = pyo.Var(initialize=1.0,  within=pyo.NonNegativeReals)  # kg/m3
-    m.nf.concPermMg        = pyo.Var(initialize=0.01, within=pyo.NonNegativeReals)  # kg/m3
-    m.nf.concRetMg         = pyo.Var(initialize=0.3,  within=pyo.NonNegativeReals)  # kg/m3
-    m.nf.pHOut             = pyo.Var(initialize=7.0,  within=pyo.NonNegativeReals, bounds=(0, 14))  # pH of permeate
-
-    # --- Design / operating variables ---
-    m.nf.area    = pyo.Var(initialize=10.0, within=pyo.NonNegativeReals, bounds=(1e-6, None))  # m2
-    m.nf.deltaP  = pyo.Var(initialize=2.0,  within=pyo.NonNegativeReals, bounds=(0, None))     # bar
-
-    # -------------------- Liquid-phase volumetric flows --------------------
-    m.nf.volFlowIn         = pyo.Expression(expr=m.nf.massFlowIn / m.model().liquidDensity)          # m3/s
-    m.nf.permeateVolFlow   = pyo.Expression(expr=m.nf.permeateMassFlow / m.model().liquidDensity)    # m3/s
-    m.nf.retentateVolFlow  = pyo.Expression(expr=m.nf.retentateMassFlow / m.model().liquidDensity)   # m3/s
-
-    # ------------------------------------------------------------------
-    # Overall flow balance -- mass balance
-    # ------------------------------------------------------------------
-    def overallBalanceRule(blk):
-        return blk.massFlowIn == blk.permeateMassFlow + blk.retentateMassFlow
-    m.nf.overallBalance = pyo.Constraint(rule=overallBalanceRule)
-
-    m.nf.recovery = pyo.Var(initialize=0.7, within=pyo.NonNegativeReals, bounds=(0.001, 0.999))  # mass recovery fraction
-
-    def recoveryDefRule(blk):
-        return blk.permeateMassFlow == blk.recovery * blk.massFlowIn
-    m.nf.recoveryDef = pyo.Constraint(rule=recoveryDefRule)
-
-    def recoveryTargetRule(blk):
-        return blk.recovery >= blk.targetRecovery
-    m.nf.recoveryTarget = pyo.Constraint(rule=recoveryTargetRule)
-
-    # ------------------------------------------------------------------
-    # Osmotic pressure: feed-side value is the AVERAGE of inlet and retentate
-    # ------------------------------------------------------------------
-    m.nf.piFeedIn = pyo.Expression(
-        expr=m.nf.osmoticCoeffTAN * m.nf.concInTAN
-           + m.nf.osmoticCoeffCa  * m.nf.concInCa
-           + m.nf.osmoticCoeffMg  * m.nf.concInMg
+    blk.rejectionNH4Intrinsic = pyo.Param(initialize=nfParams.get('NH4 Intrinsic Rejection', 0.90), mutable=True)
+    blk.pKaNH3 = pyo.Param(initialize=9.25, mutable=True)
+    blk.fixedRejection = pyo.Param(
+        ['ca', 'mg', 'liqK', 'liqP', 'orgN'],
+        initialize={
+            'ca': nfParams.get('Ca Rejection', 0.93),
+            'mg': nfParams.get('Mg Rejection', 0.88),
+            'liqK': 0.0, 'liqP': 0.0, 'orgN': 0.0,
+        },
+        mutable=True,
     )
-    m.nf.piRetentate = pyo.Expression(
-        expr=m.nf.osmoticCoeffTAN * m.nf.concRetTAN
-           + m.nf.osmoticCoeffCa  * m.nf.concRetCa
-           + m.nf.osmoticCoeffMg  * m.nf.concRetMg
+    blk.osmoticCoeff = pyo.Param(osmoticSpecies, initialize={'tan': 3.186, 'ca': 1.577, 'mg': 2.601}, mutable=True)
+
+    # -------------------- Streams --------------------
+    streamTools.addStream(blk, 'inlet', initPH=13.0)
+    streamTools.addStream(blk, 'permeate', initPH=13.0)
+    streamTools.addStream(blk, 'retentate', initPH=13.0)
+    sIn, perm, ret = blk.inlet, blk.permeate, blk.retentate
+
+    blk.recovery = pyo.Var(initialize=0.7, within=pyo.NonNegativeReals, bounds=(0.001, 0.999))
+    blk.area = pyo.Var(initialize=10.0, within=pyo.NonNegativeReals, bounds=(1e-6, None))  # m2
+    blk.deltaP = pyo.Var(initialize=2.0, within=pyo.NonNegativeReals, bounds=(0, None))    # bar
+
+    blk.volFlowIn = pyo.Expression(expr=sIn.liquidVol)
+    blk.permeateVolFlow = pyo.Expression(expr=perm.liquidVol)
+    blk.retentateVolFlow = pyo.Expression(expr=ret.liquidVol)
+    blk.alphaIn = pyo.Expression(expr=1.0 / (1.0 + 10 ** (blk.pKaNH3 - sIn.pH)))
+
+    # -------------------- Water and solids --------------------
+    blk.recoveryDef = pyo.Constraint(expr=perm.flow['liquid'] == blk.recovery * sIn.flow['liquid'])
+    blk.retentateLiquid = pyo.Constraint(expr=ret.flow['liquid'] == sIn.flow['liquid'] - perm.flow['liquid'])
+    blk.recoveryTarget = pyo.Constraint(expr=blk.recovery >= blk.targetRecovery)
+    streamTools.passComponents(blk, 'solidsToRetentate', sIn, ret, streamTools.solidsFollowing)
+    blk.noSolidsInPermeate = pyo.Constraint(streamTools.solidsFollowing, rule=lambda b, c: perm.flow[c] == 0.0)
+
+    # -------------------- Dissolved species --------------------
+    def _rejection(b, s):
+        if s == 'tan':
+            return b.rejectionNH4Intrinsic * (1.0 - b.alphaIn)
+        return b.fixedRejection[s]
+    blk.rejection = pyo.Expression(rejectedSpecies, rule=_rejection)
+    blk.effectiveRejectionTAN = pyo.Expression(expr=blk.rejection['tan'])
+
+    blk.concIn = pyo.Var(rejectedSpecies, initialize=0.5, within=pyo.NonNegativeReals)   # kg/m3
+    blk.concRet = pyo.Var(osmoticSpecies, initialize=0.5, within=pyo.NonNegativeReals)   # kg/m3
+    blk.concInDef = pyo.Constraint(rejectedSpecies, rule=lambda b, s: sIn.flow[s] == b.concIn[s] * blk.volFlowIn)
+    blk.concPerm = pyo.Expression(rejectedSpecies, rule=lambda b, s: (1.0 - b.rejection[s]) * b.concIn[s])
+    blk.permeateSpecies = pyo.Constraint(
+        rejectedSpecies, rule=lambda b, s: perm.flow[s] == b.concPerm[s] * blk.permeateVolFlow
     )
-    m.nf.piFeedAvg = pyo.Expression(expr=0.5 * (m.nf.piFeedIn + m.nf.piRetentate))
-    m.nf.piPermeate = pyo.Expression(
-        expr=m.nf.osmoticCoeffTAN * m.nf.concPermTAN
-           + m.nf.osmoticCoeffCa  * m.nf.concPermCa
-           + m.nf.osmoticCoeffMg  * m.nf.concPermMg
+    blk.retentateSpecies = pyo.Constraint(
+        rejectedSpecies, rule=lambda b, s: ret.flow[s] == sIn.flow[s] - perm.flow[s]
     )
-    m.nf.deltaPi = pyo.Expression(expr=m.nf.piFeedAvg - m.nf.piPermeate)
-
-    # Enforce a minimum net driving pressure
-    m.nf.minDrivingForce = pyo.Param(initialize=0.5, mutable=True)  # bar
-
-    def positiveFlux_rule(blk):
-        return blk.deltaP >= blk.deltaPi + blk.minDrivingForce
-    m.nf.positiveFluxConstr = pyo.Constraint(rule=positiveFlux_rule)
-
-    # ------------------------------------------------------------------
-    # Membrane flux: Qp = A * Lp * (dP - dPi)
-    # ------------------------------------------------------------------
-    def membraneFluxRule(blk):
-        return blk.permeateVolFlow == blk.area * blk.membraneLp * (blk.deltaP - blk.deltaPi) * (1e-3 / 3600.0)
-    m.nf.membraneFlux = pyo.Constraint(rule=membraneFluxRule)
-
-    def pressureLimitRule(blk):
-        return blk.deltaP <= blk.maxDeltaP
-    m.nf.pressureLimit = pyo.Constraint(rule=pressureLimitRule)
-
-    # ------------------------------------------------------------------
-    # Species split: constant observed rejection coefficients for Ca/Mg;
-    # pH-dependent (via the ionic fraction) for TAN.
-    # C_perm,i = (1 - R_i) * C_feed,i
-    # ------------------------------------------------------------------
-    m.nf.effectiveRejectionTAN = pyo.Expression(
-        expr=m.nf.rejectionNH4Intrinsic * (1.0 - m.nf.alphaIn)
+    blk.concRetDef = pyo.Constraint(
+        osmoticSpecies, rule=lambda b, s: ret.flow[s] == b.concRet[s] * blk.retentateVolFlow
     )
 
-    def permTANRule(blk):
-        return blk.concPermTAN == (1.0 - blk.effectiveRejectionTAN) * blk.concInTAN
-    m.nf.permTANDef = pyo.Constraint(rule=permTANRule)
+    blk.pHPermeate = pyo.Constraint(expr=perm.pH == sIn.pH)
+    blk.pHRetentate = pyo.Constraint(expr=ret.pH == sIn.pH)
 
-    def permCaRule(blk):
-        return blk.concPermCa == (1.0 - blk.rejectionCa) * blk.concInCa
-    m.nf.permCaDef = pyo.Constraint(rule=permCaRule)
+    # -------------------- Osmotic pressure and flux --------------------
+    blk.piFeedIn = pyo.Expression(expr=sum(blk.osmoticCoeff[s] * blk.concIn[s] for s in osmoticSpecies))
+    blk.piRetentate = pyo.Expression(expr=sum(blk.osmoticCoeff[s] * blk.concRet[s] for s in osmoticSpecies))
+    blk.piFeedAvg = pyo.Expression(expr=0.5 * (blk.piFeedIn + blk.piRetentate))
+    blk.piPermeate = pyo.Expression(expr=sum(blk.osmoticCoeff[s] * blk.concPerm[s] for s in osmoticSpecies))
+    blk.deltaPi = pyo.Expression(expr=blk.piFeedAvg - blk.piPermeate)
 
-    def permMgRule(blk):
-        return blk.concPermMg == (1.0 - blk.rejectionMg) * blk.concInMg
-    m.nf.permMgDef = pyo.Constraint(rule=permMgRule)
-
-    # ------------------------------------------------------------------
-    # Species mass balances (close retentate concentrations)
-    # Q_in*C_in = Qp*Cp + Qr*Cr
-    # ------------------------------------------------------------------
-    def tanBalanceRule(blk):
-        return (blk.volFlowIn * blk.concInTAN
-                == blk.permeateVolFlow * blk.concPermTAN + blk.retentateVolFlow * blk.concRetTAN)
-    m.nf.tanBalance = pyo.Constraint(rule=tanBalanceRule)
-
-    def caBalanceRule(blk):
-        return (blk.volFlowIn * blk.concInCa
-                == blk.permeateVolFlow * blk.concPermCa + blk.retentateVolFlow * blk.concRetCa)
-    m.nf.caBalance = pyo.Constraint(rule=caBalanceRule)
-
-    def mgBalanceRule(blk):
-        return (blk.volFlowIn * blk.concInMg
-                == blk.permeateVolFlow * blk.concPermMg + blk.retentateVolFlow * blk.concRetMg)
-    m.nf.mgBalance = pyo.Constraint(rule=mgBalanceRule)
-
-    # ------------------------------------------------------------------
-    # pH held constant across feed/retentate/permeate
-    # ------------------------------------------------------------------
-    def pHOutRule(blk):
-        return blk.pHOut == blk.pHIn
-    m.nf.pHBalance = pyo.Constraint(rule=pHOutRule)
-
-    # ------------------------------------------------------------------
-    # Performance metrics
-    # ------------------------------------------------------------------
-    m.nf.nToPermeate_kgPerS = pyo.Expression(expr=m.nf.permeateVolFlow * m.nf.concPermTAN)
-    m.nf.nToRetentate_kgPerS = pyo.Expression(expr=m.nf.retentateVolFlow * m.nf.concRetTAN)
-    m.nf.nRecoveryToPermeate = pyo.Expression(
-        expr=m.nf.nToPermeate_kgPerS / (m.nf.volFlowIn * m.nf.concInTAN + 1e-9)
+    blk.positiveFluxConstr = pyo.Constraint(expr=blk.deltaP >= blk.deltaPi + blk.minDrivingForce)
+    blk.membraneFlux = pyo.Constraint(
+        expr=blk.permeateVolFlow == blk.area * blk.membraneLp * (blk.deltaP - blk.deltaPi) * (1e-3 / 3600.0)
     )
-    m.nf.caRejectionToRetentate = pyo.Expression(
-        expr=(m.nf.retentateVolFlow * m.nf.concRetCa)
-             / (m.nf.volFlowIn * m.nf.concInCa + 1e-9)
-    )
-    m.nf.mgRejectionToRetentate = pyo.Expression(
-        expr=(m.nf.retentateVolFlow * m.nf.concRetMg)
-             / (m.nf.volFlowIn * m.nf.concInMg + 1e-9)
-    )
-    # Combined divalent concentrations -- just for reporting
-    m.nf.concInDivalent   = pyo.Expression(expr=m.nf.concInCa + m.nf.concInMg)
-    m.nf.concPermDivalent = pyo.Expression(expr=m.nf.concPermCa + m.nf.concPermMg)
-    m.nf.concRetDivalent  = pyo.Expression(expr=m.nf.concRetCa + m.nf.concRetMg)
-    m.nf.divalentRejectionToRetentate = pyo.Expression(
-        expr=(m.nf.retentateVolFlow * m.nf.concRetDivalent)
-             / (m.nf.volFlowIn * m.nf.concInDivalent + 1e-9)
-    )
+    blk.pressureLimit = pyo.Constraint(expr=blk.deltaP <= blk.maxDeltaP)
 
-    # ------------------------------------------------------------------
-    # Costs
-    # ------------------------------------------------------------------
-    # CAPEX: membrane cost * area * 3 covers installation, vessels, and
-    # peripherals ONLY (piping, instrumentation, housing)
-    m.nf.capex = pyo.Expression(expr=m.nf.capexFactor * m.nf.membraneCost * m.nf.area * 3)
+    # -------------------- Reporting --------------------
+    blk.concInTAN = pyo.Expression(expr=blk.concIn['tan'])
+    blk.concPermTAN = pyo.Expression(expr=blk.concPerm['tan'])
+    blk.nRecoveryToPermeate = pyo.Expression(expr=perm.flow['tan'] / (sIn.flow['tan'] + 1e-12))
+    blk.caRejectionToRetentate = pyo.Expression(expr=ret.flow['ca'] / (sIn.flow['ca'] + 1e-12))
+    blk.mgRejectionToRetentate = pyo.Expression(expr=ret.flow['mg'] / (sIn.flow['mg'] + 1e-12))
 
-    m.nf.feedFlow_m3h = pyo.Expression(expr=m.nf.volFlowIn * 3600.0)  # m3/h
-    m.nf.pumpPower = pyo.Expression(
-        expr=(m.nf.feedFlow_m3h * m.nf.deltaP) / (36.0 * (m.nf.pumpEfficiency + 1e-9))
-    )  # kW
-
-    m.nf.projectYears = pyo.Expression(expr=m.daysOperation / (365.0 * 24.0 * 3600.0))  # years
-
-    # Membrane replacement OPEX: recurring cost of replacing membrane elements
-    m.nf.membraneReplOpex = pyo.Expression(
-        expr=m.nf.membraneReplFrac * m.nf.membraneReplCostFac * m.nf.membraneCost
-             * m.nf.area * m.nf.projectYears
+    # -------------------- Costs --------------------
+    blk.capex = pyo.Expression(expr=blk.capexFactor * blk.membraneCost * blk.area * 3)
+    blk.feedFlowM3h = pyo.Expression(expr=blk.volFlowIn * 3600.0)
+    blk.pumpPower = pyo.Expression(expr=(blk.feedFlowM3h * blk.deltaP) / (36.0 * (blk.pumpEfficiency + 1e-9)))  # kW
+    blk.projectYears = pyo.Expression(expr=m.daysOperation / (365.0 * 24.0 * 3600.0))
+    blk.membraneReplOpex = pyo.Expression(
+        expr=blk.membraneReplFrac * blk.membraneReplCostFac * blk.membraneCost * blk.area * blk.projectYears
     )
+    blk.pumpOpex = pyo.Expression(expr=blk.pumpPower * m.elecPrice * (m.daysOperation / 3600.0))
+    blk.opex = pyo.Expression(expr=blk.pumpOpex + blk.membraneReplOpex)
 
-    m.nf.pumpOpex = pyo.Expression(
-        expr=m.nf.pumpPower * m.elecPrice * (m.daysOperation / 3600.0)
-    )
-    m.nf.opex = pyo.Expression(expr=m.nf.pumpOpex + m.nf.membraneReplOpex)
+    return blk

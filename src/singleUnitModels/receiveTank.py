@@ -16,8 +16,10 @@
 #               The acid solution adds to the liquid mass.                    #
 #                                                                             #
 # Input:        - m : Pyomo concrete model                                    #
+#               - blockName : block name (default 'rt')                       #
 #                                                                             #
-# Output:       - m.rt                                                        #
+# Output:       - m.<blockName> (default 'rt'); also used as the reject-     #
+#                 stream neutralization tank (blockName 'nt')                #
 #------------------------------------------------------------------------------
 
 import pyomo.environ as pyo
@@ -29,10 +31,10 @@ except ImportError:
     import streamTools
 
 
-def receiveTank(m):
+def receiveTank(m, blockName='rt'):
 
-    m.rt = pyo.Block()
-    blk = m.rt
+    blk = pyo.Block()
+    m.add_component(blockName, blk)
 
     receiveTankParams = getParams.params['Receiving Tank']
 
@@ -63,7 +65,12 @@ def receiveTank(m):
     blk.acidEqCredit.fix(0.0)
 
     # -------------------- Stoichiometric acid demand --------------------
-    blk.ohNeutralizationDemand = pyo.Expression(expr=blk.residualOHMolPerM3 * sIn.liquidVol)        # mol/s
+    # ohFromInletPH = 0: fixed residual OH- (pH-13 conditioned sludge, as before);
+    # ohFromInletPH = 1: free OH- from the inlet pH, [OH-] = 10^(pH-11) mol/m3 (used to neutralize reject streams)
+    blk.ohFromInletPH = pyo.Param(initialize=0.0, mutable=True)
+    blk.ohNeutralizationDemand = pyo.Expression(
+        expr=((1.0 - blk.ohFromInletPH) * blk.residualOHMolPerM3 + blk.ohFromInletPH * 10 ** (sIn.pH - 11.0)) * sIn.liquidVol
+    )  # mol/s
     blk.tanProtonationDemand = pyo.Expression(expr=sIn.flow['tan'] / streamTools.molwtN)            # mol/s
     blk.bufferingAcidDemand = pyo.Expression(expr=blk.alkalinityBufferMolPerM3 * sIn.liquidVol)     # mol/s
     blk.grossAcidEqPerS = pyo.Expression(
