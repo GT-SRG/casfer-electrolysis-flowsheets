@@ -88,6 +88,10 @@ def addProductQuality(m, product, name='quality'):
     blk.nRecovery = pyo.Expression(expr=100.0 * blk.nMass / (m.feedTotalN + 1e-12))
     blk.pRecovery = pyo.Expression(expr=100.0 * blk.pMass / (m.feedTotalP + 1e-12))
     blk.kRecovery = pyo.Expression(expr=100.0 * blk.kMass / (m.feedTotalK + 1e-12))
+    blk.caMass = pyo.Expression(expr=product.totalCa)
+    blk.mgMass = pyo.Expression(expr=product.totalMg)
+    blk.caWtPercentDry = pyo.Expression(expr=100.0 * blk.caMass / (blk.dryMass + 1e-12))
+    blk.mgWtPercentDry = pyo.Expression(expr=100.0 * blk.mgMass / (blk.dryMass + 1e-12))
     return blk
 
 
@@ -101,7 +105,8 @@ def printStream(label, stream):
           f'dissolved organic {v(stream.flow["orgN"]) * 86400:.4g}')
     print(f'  P (kg-P/day): solid {v(stream.flow["solidP"]) * 86400:.4g}, dissolved {v(stream.flow["liqP"]) * 86400:.4g};  '
           f'K (kg-K/day): solid {v(stream.flow["solidK"]) * 86400:.4g}, dissolved {v(stream.flow["liqK"]) * 86400:.4g}')
-    print(f'  dissolved Ca / Mg (kg/day): {v(stream.flow["ca"]) * 86400:.4g} / {v(stream.flow["mg"]) * 86400:.4g}')
+    print(f'  Ca (kg/day): solid {v(stream.flow["solidCa"]) * 86400:.4g}, dissolved {v(stream.flow["ca"]) * 86400:.4g};  '
+          f'Mg (kg/day): solid {v(stream.flow["solidMg"]) * 86400:.4g}, dissolved {v(stream.flow["mg"]) * 86400:.4g}')
 
 
 def printProductQuality(label, q):
@@ -111,6 +116,7 @@ def printProductQuality(label, q):
     print(f'N  wt% wet / dry: {v(q.nWtPercentWet):.4f} / {v(q.nWtPercentDry):.4f}   (N recovery {v(q.nRecovery):.2f}% of feed N)')
     print(f'P  wt% wet / dry: {v(q.pWtPercentWet):.4f} / {v(q.pWtPercentDry):.4f}   (P2O5 wet/dry {v(q.p2o5WtPercentWet):.4f} / {v(q.p2o5WtPercentDry):.4f}; P recovery {v(q.pRecovery):.2f}%)')
     print(f'K  wt% wet / dry: {v(q.kWtPercentWet):.4f} / {v(q.kWtPercentDry):.4f}   (K2O wet/dry {v(q.k2oWtPercentWet):.4f} / {v(q.k2oWtPercentDry):.4f}; K recovery {v(q.kRecovery):.2f}%)')
+    print(f'Ca / Mg wt% dry: {v(q.caWtPercentDry):.4f} / {v(q.mgWtPercentDry):.4f}')
 
 
 def printBalance(m, productStreams, nLosses, otherOutletStreams=()):

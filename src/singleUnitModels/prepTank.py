@@ -10,9 +10,14 @@
 #                 centrate: (TAN + residual OH- + alkalinity buffer) / 2      #
 #               CaO split: baseSolubility x outlet liquid volume dissolves    #
 #               (reports to liquid mass), the rest stays as caoSolids.        #
-#               Dissolved Ca/Mg released on conditioning (origin-based):      #
-#                 Ca = dissolvedCaPerKgCaO x total CaO                        #
-#                 Mg = dissolvedMgPerKgDS  x organic dry solids of sludgeIn   #
+#               Dissolved Ca: the liquid is saturated in lime (excess CaO   #
+#                 stays solid), so dissolved Ca = Ca in the dissolved CaO;    #
+#                 feed Ca is absorbed into this saturation level.             #
+#               Dissolved Mg precipitates as Mg(OH)2 at pH 13              #
+#                 (mgPrecipitationFrac, default 1.0) and moves to solidMg.    #
+#               solidCa closes the Ca balance: feed solid Ca + feed dissolved #
+#                 Ca + Ca in the undissolved CaO (feed Ca reset to lime       #
+#                 saturation precipitates and joins the solids).              #
 #               Dissolved P co-precipitates with Ca at pH 13 and moves to     #
 #               solidP (pPrecipitationFrac, default 1.0).                     #
 #               N species are not transformed here.                           #
@@ -55,11 +60,11 @@ def prepTank(m):
     blk.alkalinityBuffer = pyo.Param(initialize=20.0, mutable=True)    # mol OH- / m3 centrate
     blk.targetOHConc     = pyo.Param(initialize=100.0, mutable=True)   # mol OH- / m3 at pH 13
     blk.mwCaO            = pyo.Param(initialize=0.05608)               # kg/mol
+    blk.mwCa             = pyo.Param(initialize=0.04008)               # kg/mol
     blk.targetpH         = pyo.Param(initialize=13.0, mutable=True)
 
     # Dissolved species released on conditioning
-    blk.dissolvedCaPerKgCaO = pyo.Param(initialize=0.0468, mutable=True)   # kg-Ca / kg-CaO
-    blk.dissolvedMgPerKgDS  = pyo.Param(initialize=0.00350, mutable=True)  # kg-Mg / kg organic DS
+    blk.mgPrecipitationFrac = pyo.Param(initialize=1.0, mutable=True)      # fraction of dissolved Mg -> Mg(OH)2
     blk.pPrecipitationFrac  = pyo.Param(initialize=1.0, mutable=True)      # fraction of dissolved P -> solidP
 
     blk.minCapex         = pyo.Param(initialize=10000.0, mutable=True)
@@ -105,6 +110,12 @@ def prepTank(m):
 
     blk.solidNBalance = pyo.Constraint(expr=out.flow['solidN'] == _mixed('solidN'))
     blk.solidKBalance = pyo.Constraint(expr=out.flow['solidK'] == _mixed('solidK'))
+    blk.solidCaBalance = pyo.Constraint(
+        expr=out.flow['solidCa'] == _mixed('solidCa') + _mixed('ca') + (blk.mwCa / blk.mwCaO) * blk.undissolvedCaO
+    )
+    blk.solidMgBalance = pyo.Constraint(
+        expr=out.flow['solidMg'] == _mixed('solidMg') + blk.mgPrecipitationFrac * _mixed('mg')
+    )
     blk.solidPBalance = pyo.Constraint(
         expr=out.flow['solidP'] == _mixed('solidP') + blk.pPrecipitationFrac * _mixed('liqP')
     )
@@ -113,8 +124,8 @@ def prepTank(m):
     blk.tanBalance  = pyo.Constraint(expr=out.flow['tan'] == _mixed('tan'))
     blk.orgNBalance = pyo.Constraint(expr=out.flow['orgN'] == _mixed('orgN'))
     blk.liqKBalance = pyo.Constraint(expr=out.flow['liqK'] == _mixed('liqK'))
-    blk.caBalance   = pyo.Constraint(expr=out.flow['ca'] == _mixed('ca') + blk.dissolvedCaPerKgCaO * blk.totalCaO)
-    blk.mgBalance   = pyo.Constraint(expr=out.flow['mg'] == _mixed('mg') + blk.dissolvedMgPerKgDS * blk.sludgeDrySolidsFlow)
+    blk.caBalance   = pyo.Constraint(expr=out.flow['ca'] == (blk.mwCa / blk.mwCaO) * blk.dissolvedCaO)
+    blk.mgBalance   = pyo.Constraint(expr=out.flow['mg'] == (1.0 - blk.mgPrecipitationFrac) * _mixed('mg'))
 
     blk.pHConstr = pyo.Constraint(expr=out.pH == blk.targetpH)
 

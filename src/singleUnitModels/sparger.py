@@ -103,10 +103,7 @@ def sparger(model, blockName, paramsKey='Combined Sparger'):
 
     # -------------------- Liquid-side component balances --------------------
     blk.tanBalance = pyo.Constraint(expr=out.flow['tan'] == sIn.flow['tan'] + blk.nh3TransferredMolS * blk.molwtN)
-    streamTools.passComponents(
-        blk, 'passBalance', sIn, out,
-        ['liquid', 'orgSolids', 'caoSolids', 'solidN', 'solidP', 'solidK', 'orgN', 'liqP', 'liqK', 'ca', 'mg']
-    )
+    streamTools.passComponents(blk, 'passBalance', sIn, out, streamTools.componentsExcept('tan'))
 
     # -------------------- Carbonate / ammonium chemistry --------------------
     blk.ka1 = pyo.Param(initialize=10 ** (-6.35), mutable=True)

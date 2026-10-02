@@ -75,10 +75,7 @@ def nh3Stripper(m, blockName='nst'):
     blk.nitrogenBalance = pyo.Constraint(
         expr=out.flow['tan'] == sIn.flow['tan'] - blk.nh3StrippedMolFlow * blk.molwtN
     )
-    streamTools.passComponents(
-        blk, 'passBalance', sIn, out,
-        ['liquid', 'orgSolids', 'caoSolids', 'solidN', 'solidP', 'solidK', 'orgN', 'liqP', 'liqK', 'ca', 'mg']
-    )
+    streamTools.passComponents(blk, 'passBalance', sIn, out, streamTools.componentsExcept('tan'))
 
     # -------------------- Inlet speciation (mol/m3) --------------------
     blk.hIn = pyo.Expression(expr=10 ** (3 - sIn.pH))

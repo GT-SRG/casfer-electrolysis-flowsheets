@@ -17,6 +17,9 @@
 #                   solidN     : kg-N/s bound to the solids                   #
 #                   solidP     : kg-P/s in the solids (incl. Ca-precipitated) #
 #                   solidK     : kg-K/s bound to the solids                   #
+#                   solidCa    : kg-Ca/s in the solids (incl. the Ca in       #
+#                                undissolved CaO and in precipitates)         #
+#                   solidMg    : kg-Mg/s in the solids (incl. Mg(OH)2)        #
 #                 Dissolved tracers (inside liquid mass, travel with liquid): #
 #                   tan        : kg-N/s total ammonia nitrogen (NH3 + NH4+)   #
 #                   orgN       : kg-N/s dissolved organic N (not strippable,  #
@@ -34,7 +37,7 @@ import pyomo.environ as pyo
 
 bulkComponents = ['liquid', 'orgSolids', 'caoSolids']
 solidPhaseComponents = ['orgSolids', 'caoSolids']
-solidBoundComponents = ['solidN', 'solidP', 'solidK']
+solidBoundComponents = ['solidN', 'solidP', 'solidK', 'solidCa', 'solidMg']
 dissolvedComponents = ['tan', 'orgN', 'liqP', 'liqK', 'ca', 'mg']
 allComponents = bulkComponents + solidBoundComponents + dissolvedComponents
 
@@ -44,6 +47,11 @@ solidsFollowing = solidPhaseComponents + solidBoundComponents
 liquidFollowing = ['liquid'] + dissolvedComponents
 
 molwtN = 0.014007    # kg/mol
+
+
+def componentsExcept(*excluded):
+    """All stream components except the listed ones (for pass-through balances)."""
+    return [c for c in allComponents if c not in excluded]
 
 
 def ensureComponentSet(model):
@@ -73,6 +81,8 @@ def addStream(parent, name, initFlow=None, initPH=7.0):
     stream.totalN = pyo.Expression(expr=stream.flow['solidN'] + stream.flow['tan'] + stream.flow['orgN'])  # kg-N/s
     stream.totalP = pyo.Expression(expr=stream.flow['solidP'] + stream.flow['liqP'])            # kg-P/s
     stream.totalK = pyo.Expression(expr=stream.flow['solidK'] + stream.flow['liqK'])            # kg-K/s
+    stream.totalCa = pyo.Expression(expr=stream.flow['solidCa'] + stream.flow['ca'])            # kg-Ca/s
+    stream.totalMg = pyo.Expression(expr=stream.flow['solidMg'] + stream.flow['mg'])            # kg-Mg/s
 
     # Reporting only (ratios): do not use inside constraints
     stream.tss = pyo.Expression(expr=stream.solidsMass / (stream.totalMass + 1e-12))

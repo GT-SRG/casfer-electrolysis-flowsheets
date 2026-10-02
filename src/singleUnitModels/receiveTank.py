@@ -86,10 +86,7 @@ def receiveTank(m, blockName='rt'):
 
     # -------------------- Component balances --------------------
     blk.liquidBalance = pyo.Constraint(expr=out.flow['liquid'] == sIn.flow['liquid'] + blk.acidMassFlowIn)
-    streamTools.passComponents(
-        blk, 'passBalance', sIn, out,
-        ['orgSolids', 'caoSolids', 'solidN', 'solidP', 'solidK', 'tan', 'orgN', 'liqP', 'liqK', 'ca', 'mg']
-    )
+    streamTools.passComponents(blk, 'passBalance', sIn, out, streamTools.componentsExcept('liquid'))
     blk.pHConstr = pyo.Constraint(expr=out.pH == blk.targetpH)
 
     # -------------------- Sizing and costs --------------------

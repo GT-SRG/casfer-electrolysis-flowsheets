@@ -71,8 +71,7 @@ def electrolyzer(m):
 
     # Everything else passes through unchanged
     streamTools.passComponents(
-        blk, 'passBalance', sIn, out,
-        ['liquid', 'orgSolids', 'caoSolids', 'solidP', 'solidK', 'liqP', 'liqK', 'ca', 'mg']
+        blk, 'passBalance', sIn, out, streamTools.componentsExcept('solidN', 'tan', 'orgN')
     )
     blk.pHBalance = pyo.Constraint(expr=out.pH == sIn.pH)
 

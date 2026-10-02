@@ -242,16 +242,13 @@ def gpm(m):
     # -------------------- Outlet streams --------------------
     blk.raffinateLiquid = pyo.Constraint(expr=raff.flow['liquid'] == sIn.flow['liquid'] - blk.jWaterVaporMassFlow)
     blk.raffinateTan = pyo.Constraint(expr=raff.flow['tan'] == sIn.flow['tan'] - blk.nRemoved)
-    streamTools.passComponents(
-        blk, 'raffinatePass', sIn, raff,
-        ['orgSolids', 'caoSolids', 'solidN', 'solidP', 'solidK', 'orgN', 'liqP', 'liqK', 'ca', 'mg']
-    )
+    streamTools.passComponents(blk, 'raffinatePass', sIn, raff, streamTools.componentsExcept('liquid', 'tan'))
     blk.raffinatePH = pyo.Constraint(expr=raff.pH == blk.pHOut)
 
     blk.productLiquid = pyo.Constraint(expr=prod.flow['liquid'] == blk.productMassFlow)
     blk.productTan = pyo.Constraint(expr=prod.flow['tan'] == blk.nRemoved)
     blk.productOther = pyo.Constraint(
-        ['orgSolids', 'caoSolids', 'solidN', 'solidP', 'solidK', 'orgN', 'liqP', 'liqK', 'ca', 'mg'],
+        streamTools.componentsExcept('liquid', 'tan'),
         rule=lambda b, c: prod.flow[c] == 0.0
     )
 
