@@ -26,23 +26,34 @@ def safeValue(expr):
 
 
 def addStandardFeeds(m, feedPH=7.5):
-    """Dewatered sludge cake + centrate, Lubbock base case."""
+    """Dewatered sludge cake + centrate, Lubbock base case.
+
+    The same liquid-phase composition is applied to the centrate and to the
+    pore liquid of the sludge cake:
+      TAN 750 g-N/m3; P 13 g-P/m3 (PO4 40 mg/L); K 275 g-K/m3 (250-300 mg/L);
+      Ca 40 g/m3 (centrate 20-60 mg/L); Mg 7 g/m3 (centrate 4-10 mg/L).
+    """
+    feedLiquid = dict(
+        tanConcGm3=750.0,     # g-N/m3 liquid
+        liqPConcMgL=13.0,     # mg-P/L liquid (PO4 40 mg/L x 30.97/94.97)
+        liqKConcMgL=275.0,    # mg-K/L liquid
+        caConcKgM3=0.040,     # kg/m3 liquid (20-60 mg/L, midpoint)
+        mgConcKgM3=0.007,     # kg/m3 liquid (4-10 mg/L, midpoint)
+    )
     # Dewatered sludge cake: 76.5 m3/d at 1200 kg/m3, 20% TS
     feedSource(
         m, 'sludgeFeed',
         volFlowM3s=76.5 / 86400.0, density=1200.0, tss=0.20,
-        tanConcGm3=750.0,                                  # g-N/m3 in the cake's own liquid
-        solidsNFrac=0.05, solidsPFrac=0.025, solidsKFrac=0.0035, 
-        liqPConcMgL=40.0, liqKConcMgL=275.0,               
+        solidsNFrac=0.05, solidsPFrac=0.025, solidsKFrac=0.0035,  # kg/kg organic dry solids
         pH=feedPH,
+        **feedLiquid,
     )
     # Centrate: 214 m3/d, no solids
     feedSource(
         m, 'centrateFeed',
         volFlowM3s=214.0 / 86400.0, density=1000.0, tss=0.0,
-        tanConcGm3=750.0,
-        liqPConcMgL=40.0, liqKConcMgL=275.0,
         pH=feedPH,
+        **feedLiquid,
     )
     feeds = (m.sludgeFeed.outlet, m.centrateFeed.outlet)
     m.feedMassFlow = pyo.Expression(expr=sum(s.totalMass for s in feeds))      # kg/s
