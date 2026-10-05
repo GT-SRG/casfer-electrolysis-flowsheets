@@ -59,7 +59,7 @@ def nh3Stripper(m, blockName='nst'):
     streamTools.addStream(blk, 'outlet', initPH=12.5)
     sIn, out = blk.inlet, blk.outlet
 
-    blk.numberOfStages = pyo.Var(initialize=3.0, within=pyo.NonNegativeReals, bounds=(1.0, 10.0))
+    blk.numberOfStages = pyo.Var(initialize=10.0, within=pyo.NonNegativeReals, bounds=(1.0, 10.0))
     blk.concIn = pyo.Var(initialize=0.5, within=pyo.NonNegativeReals)    # kg-N/m3 TAN in
     blk.concOut = pyo.Var(initialize=0.05, within=pyo.NonNegativeReals)  # kg-N/m3 TAN out
     blk.sweepGasMolFlowIn = pyo.Var(initialize=1.0, within=pyo.NonNegativeReals)   # mol/s

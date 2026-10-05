@@ -66,8 +66,8 @@ def goMembraneDewatering(m):
     sIn, ret, perm = blk.inlet, blk.retentate, blk.permeate
 
     blk.permeateMassFlow = pyo.Var(initialize=5.0, within=pyo.NonNegativeReals)            # kg/s
-    blk.area   = pyo.Var(initialize=100.0, within=pyo.NonNegativeReals, bounds=(1e-6, None))  # m2
-    blk.deltaP = pyo.Var(initialize=2.0, within=pyo.NonNegativeReals, bounds=(0, None))       # bar
+    blk.area   = pyo.Var(initialize=23.0, within=pyo.NonNegativeReals, bounds=(1e-6, None))  # m2
+    blk.deltaP = pyo.Var(initialize=8.0, within=pyo.NonNegativeReals, bounds=(0, None))       # bar
 
     # -------------------- Bulk split --------------------
     streamTools.passComponents(blk, 'solidsToRetentate', sIn, ret, streamTools.solidsFollowing)

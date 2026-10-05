@@ -1,7 +1,13 @@
 #------------------------------------------------------------------------------
 # function:     electrolyzer.py                                               #
 # Description:  Electrolyzer: liberates part of the solid-bound N into the    #
-#               liquid phase. Bulk mass, solids, P, K, Ca, Mg pass through.   #
+#               liquid phase. CaO solids, P, K, Ca, Mg pass through.          #
+#                                                                             #
+#               Solubilized organic mass: the liberated N leaves the solids   #
+#               inside the organic matter that carries it, so organic solids  #
+#               mass liberatedN / solubilizedNFrac moves from orgSolids to    #
+#               liquid (default 0.16 kg-N/kg, protein basis; 1.0 = N only).   #
+#               Total mass is conserved; the solids fraction decreases.       #
 #                                                                             #
 #               Streams: inlet -> outlet                                      #
 #                                                                             #
@@ -45,6 +51,7 @@ def electrolyzer(m):
     blk.liberatedTanFrac     = pyo.Param(initialize=0.0, mutable=True)    # TAN share of liberated N
     blk.nitrogenLossFraction = pyo.Param(initialize=0.05, mutable=True)   # fraction of liquid TAN lost (volatilization + oxidation)
     blk.orgNLossFraction     = pyo.Param(initialize=0.0, mutable=True)    # fraction of dissolved orgN lost
+    blk.solubilizedNFrac     = pyo.Param(initialize=0.16, mutable=True)   # kg-N per kg solubilized organic matter (protein basis)
 
     # -------------------- Streams --------------------
     streamTools.addStream(blk, 'inlet', initPH=13.0)
@@ -69,9 +76,15 @@ def electrolyzer(m):
     blk.tanBalance = pyo.Constraint(expr=out.flow['tan'] == blk.tanAvailableForLoss - blk.tanLost)
     blk.orgNBalance = pyo.Constraint(expr=out.flow['orgN'] == blk.orgNAvailableForLoss - blk.orgNLost)
 
+    # -------------------- Solubilized organic mass --------------------
+    blk.solubilizedOrgMass = pyo.Expression(expr=blk.liberatedN / blk.solubilizedNFrac)   # kg/s
+    blk.orgSolidsBalance = pyo.Constraint(expr=out.flow['orgSolids'] == sIn.flow['orgSolids'] - blk.solubilizedOrgMass)
+    blk.liquidBalance = pyo.Constraint(expr=out.flow['liquid'] == sIn.flow['liquid'] + blk.solubilizedOrgMass)
+
     # Everything else passes through unchanged
     streamTools.passComponents(
-        blk, 'passBalance', sIn, out, streamTools.componentsExcept('solidN', 'tan', 'orgN')
+        blk, 'passBalance', sIn, out,
+        streamTools.componentsExcept('solidN', 'tan', 'orgN', 'orgSolids', 'liquid')
     )
     blk.pHBalance = pyo.Constraint(expr=out.pH == sIn.pH)
 
