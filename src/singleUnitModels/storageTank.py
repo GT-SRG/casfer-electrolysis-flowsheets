@@ -2,6 +2,8 @@
 # function:     storageTank.py                                                #
 # Description:  Product storage tank, sized for storageTimeHrs of product.    #
 #               Capital cost only. Pure pass-through of every component.      #
+#               Capital cost: bare-module cost C_BM = F_BM x C_p (Turton      #
+#               atmospheric storage tank, F_BM = 1.1).                        #
 #                                                                             #
 #               Streams: inlet -> outlet                                      #
 #                                                                             #
@@ -33,12 +35,12 @@ def storageTank(m, blockName='st'):
         except Exception:
             return default
 
-    blk.costReference   = pyo.Param(initialize=_getParam('Cost Reference', 254842.0))    # $
-    blk.volumeReference = pyo.Param(initialize=_getParam('Volume Reference', 249.83718))  # m3
-    blk.capexFactor     = pyo.Param(initialize=_getParam('Capex Factor', 0.6))
-    blk.storageTimeHrs  = pyo.Param(initialize=48.0, mutable=True)
-    blk.minCapex        = pyo.Param(initialize=5000.0, mutable=True)
-    blk.productDensity  = pyo.Param(initialize=_getParam('Product Density', 1200.0), mutable=True)  # kg/m3, sizing only
+    blk.costReference    = pyo.Param(initialize=_getParam('Cost Reference', 254842.0))    # $ (purchased)
+    blk.volumeReference  = pyo.Param(initialize=_getParam('Volume Reference', 249.83718))  # m3
+    blk.capexFactor      = pyo.Param(initialize=_getParam('Capex Factor', 0.6))
+    blk.storageTimeHrs   = pyo.Param(initialize=48.0, mutable=True)
+    blk.bareModuleFactor = pyo.Param(initialize=1.1, mutable=True)   # Turton atmospheric storage tank
+    blk.productDensity   = pyo.Param(initialize=_getParam('Product Density', 1200.0), mutable=True)  # kg/m3, sizing only
 
     streamTools.addStream(blk, 'inlet')
     streamTools.addStream(blk, 'outlet')
@@ -52,9 +54,9 @@ def storageTank(m, blockName='st'):
         expr=blk.tankVolume == blk.storageTimeHrs * 3600.0 * (blk.productMassFlowIn / blk.productDensity)
     )
 
-    blk.capex = pyo.Expression(
-        expr=blk.minCapex + 1.64 * blk.costReference * (blk.tankVolume / blk.volumeReference) ** blk.capexFactor
-    )
+    blk.purchaseCost = pyo.Expression(expr=blk.costReference * (blk.tankVolume / blk.volumeReference) ** blk.capexFactor)
+    blk.bareModuleCost = pyo.Expression(expr=blk.bareModuleFactor * blk.purchaseCost)
+    blk.capex = pyo.Expression(expr=blk.bareModuleCost)   # bare-module cost, $
     blk.opex = pyo.Expression(expr=0.0)
 
     return blk

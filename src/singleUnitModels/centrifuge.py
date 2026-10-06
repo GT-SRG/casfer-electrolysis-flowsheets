@@ -13,6 +13,9 @@
 #                   (cakeLiquidFrac), i.e. the centrifuge is non-selective    #
 #                   for anything dissolved                                    #
 #                                                                             #
+#               Capital cost: bare-module cost C_BM = F_BM x C_p (Turton      #
+#               centrifuge, F_BM = 1.57).                                     #
+#                                                                             #
 #               Uses m.y_cf (binary or Param) for the geometry big-M if the  #
 #               flowsheet defines it; otherwise the unit is always on.        #
 #                                                                             #
@@ -38,12 +41,13 @@ def centrifuge(m):
 
     centrifugeParams = getParams.params['Centrifuge']
 
-    blk.costReference   = pyo.Param(initialize=centrifugeParams['Cost Reference'])     # $
-    blk.volumeReference = pyo.Param(initialize=centrifugeParams['Volume Reference'])   # m3/s
-    blk.capexFactor     = pyo.Param(initialize=centrifugeParams['Capex Factor'])
-    blk.beta            = pyo.Param(initialize=centrifugeParams['Beta'])
-    blk.solidDiameter   = pyo.Param(initialize=centrifugeParams['Particle Diameter'])  # m
-    blk.particleDensity = pyo.Param(initialize=centrifugeParams.get('Particle Density', 2650))  # kg/m3
+    blk.costReference    = pyo.Param(initialize=centrifugeParams['Cost Reference'])     # $ (purchased)
+    blk.volumeReference  = pyo.Param(initialize=centrifugeParams['Volume Reference'])   # m3/s
+    blk.capexFactor      = pyo.Param(initialize=centrifugeParams['Capex Factor'])
+    blk.bareModuleFactor = pyo.Param(initialize=1.57, mutable=True)                     # Turton centrifuge
+    blk.beta             = pyo.Param(initialize=centrifugeParams['Beta'])
+    blk.solidDiameter    = pyo.Param(initialize=centrifugeParams['Particle Diameter'])  # m
+    blk.particleDensity  = pyo.Param(initialize=centrifugeParams.get('Particle Density', 2650))  # kg/m3
 
     # -------------------- Streams --------------------
     streamTools.addStream(blk, 'inlet')
@@ -120,7 +124,9 @@ def centrifuge(m):
     blk.cakeTSSCeiling = pyo.Constraint(expr=blk.cakeTSS <= blk.maxCakeTSS)
 
     # -------------------- Costs --------------------
-    blk.capex = pyo.Expression(expr=blk.costReference * (blk.sludgeVolFlowIn / blk.volumeReference) ** blk.capexFactor)
+    blk.purchaseCost = pyo.Expression(expr=blk.costReference * (blk.sludgeVolFlowIn / blk.volumeReference) ** blk.capexFactor)
+    blk.bareModuleCost = pyo.Expression(expr=blk.bareModuleFactor * blk.purchaseCost)
+    blk.capex = pyo.Expression(expr=blk.bareModuleCost)   # bare-module cost, $
     blk.powerNumber = pyo.Param(initialize=centrifugeParams['Power Number'] / 4)
     blk.powerW = pyo.Expression(expr=blk.powerNumber * m.sludgeDensity * blk.agitRotation ** 3 * blk.tankDiameter ** 5)
     blk.powerKW = pyo.Expression(expr=blk.powerW / 1000.0)

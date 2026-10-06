@@ -101,29 +101,17 @@ def electrolyzer(m):
     blk.elAreaRequired = pyo.Expression(expr=blk.sludgeOutDryBasisKgPerDay / (blk.dailyCapacityPerM2 + 1e-9))
     blk.areaFromCapacity = pyo.Constraint(expr=blk.area == blk.elAreaRequired)
 
-    # -------------------- Component-based CAPEX --------------------
+    # -------------------- CAPEX --------------------
+    # Purchased cost of the complete electrolyzer system from the prototype: stack cost per m2
+    # times the prototype system factor (1.64, covers power supply, pumps, tanks and the rest of
+    # the balance of plant), for numStacks stacks (duty + standby). C_BM = F_BM * C_p.
     blk.stackUnitCost = pyo.Param(initialize=6000.0, mutable=True)        # $/m2
-    blk.stackCapex = pyo.Expression(expr=blk.stackUnitCost * blk.area)
-
-    blk.currentDensity = pyo.Param(initialize=30.0, mutable=True)          # A/m2
-    blk.powerSourceUnitCost = pyo.Param(initialize=20.0, mutable=True)     # $/A
-    blk.totalCurrent = pyo.Expression(expr=blk.currentDensity * blk.area)
-    blk.powerSourceCapex = pyo.Expression(expr=blk.powerSourceUnitCost * blk.totalCurrent)
-
-    blk.pumpUnitCost = pyo.Param(initialize=22000.0, mutable=True)         # $/pump
-    blk.areaPerPump = pyo.Param(initialize=3.0, mutable=True)              # m2/pump
-    blk.numPumps = pyo.Expression(expr=blk.area / blk.areaPerPump)
-    blk.pumpCapex = pyo.Expression(expr=blk.pumpUnitCost * blk.numPumps)
-
-    blk.tankPairCost = pyo.Param(initialize=8990.0, mutable=True)          # $/pair
-    blk.areaPerTankPair = pyo.Param(initialize=4.714, mutable=True)        # m2/pair
-    blk.numTankPairs = pyo.Expression(expr=blk.area / blk.areaPerTankPair)
-    blk.tankCapex = pyo.Expression(expr=blk.tankPairCost * blk.numTankPairs)
-
-    # 2 stacks per electrolyzer, 1.64x stack cost for balance-of-plant
-    blk.capex = pyo.Expression(
-        expr=2 * 1.64 * blk.stackCapex + blk.pumpCapex + blk.tankCapex + blk.powerSourceCapex
-    )
+    blk.systemFactor = pyo.Param(initialize=1.64, mutable=True)           # system / stack cost, prototype
+    blk.numStacks = pyo.Param(initialize=2.0, mutable=True)               # duty + standby
+    blk.bareModuleFactor = pyo.Param(initialize=1.4, mutable=True)        # packaged skid
+    blk.purchaseCost = pyo.Expression(expr=blk.numStacks * blk.systemFactor * blk.stackUnitCost * blk.area)
+    blk.bareModuleCost = pyo.Expression(expr=blk.bareModuleFactor * blk.purchaseCost)
+    blk.capex = pyo.Expression(expr=blk.bareModuleCost)   # bare-module cost, $
 
     # -------------------- OPEX --------------------
     blk.power = pyo.Expression(expr=blk.SEC * blk.solidsNIn * 3600.0)                      # kW

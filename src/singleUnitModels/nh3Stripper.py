@@ -45,10 +45,10 @@ def nh3Stripper(m, blockName='nst'):
     blk.atmosphericPressureBar = pyo.Param(initialize=1.01325, mutable=True)
     blk.gasTempK = pyo.Param(initialize=_get('Gas Temperature', 298.15), mutable=True)
 
-    blk.costReference = pyo.Param(initialize=_get('Cost Reference', 5000.0), mutable=True)    # $/m3
+    blk.costReference = pyo.Param(initialize=_get('Cost Reference', 5000.0), mutable=True)    # $ at volumeReference
     blk.volumeReference = pyo.Param(initialize=_get('Volume Reference', 10.0), mutable=True)  # m3
     blk.capexFactor = pyo.Param(initialize=_get('Capex Factor', 0.7), mutable=True)
-    blk.minCapex = pyo.Param(initialize=10000.0, mutable=True)
+    blk.bareModuleFactor = pyo.Param(initialize=4.07, mutable=True)   # Turton CS vertical process vessel/tower, ambient P
 
     blk.henryConst = pyo.Param(initialize=_get('NH3 Henry Constant', 58.5), mutable=True)  # mol/L/atm
     blk.pKaNH3 = pyo.Param(initialize=_get('NH4 pKa', 9.25), mutable=True)
@@ -59,7 +59,7 @@ def nh3Stripper(m, blockName='nst'):
     streamTools.addStream(blk, 'outlet', initPH=12.5)
     sIn, out = blk.inlet, blk.outlet
 
-    blk.numberOfStages = pyo.Var(initialize=10.0, within=pyo.NonNegativeReals, bounds=(1.0, 10.0))
+    blk.numberOfStages = pyo.Var(initialize=3.0, within=pyo.NonNegativeReals, bounds=(1.0, 10.0))
     blk.concIn = pyo.Var(initialize=0.5, within=pyo.NonNegativeReals)    # kg-N/m3 TAN in
     blk.concOut = pyo.Var(initialize=0.05, within=pyo.NonNegativeReals)  # kg-N/m3 TAN out
     blk.sweepGasMolFlowIn = pyo.Var(initialize=1.0, within=pyo.NonNegativeReals)   # mol/s
@@ -141,9 +141,11 @@ def nh3Stripper(m, blockName='nst'):
     )
 
     # -------------------- Costs --------------------
-    blk.capex = pyo.Expression(
-        expr=blk.minCapex + blk.costReference * (blk.tankVolume / (blk.volumeReference + 1e-12)) ** blk.capexFactor
+    blk.purchaseCost = pyo.Expression(
+        expr=blk.costReference * (blk.tankVolume / (blk.volumeReference + 1e-12)) ** blk.capexFactor
     )
+    blk.bareModuleCost = pyo.Expression(expr=blk.bareModuleFactor * blk.purchaseCost)
+    blk.capex = pyo.Expression(expr=blk.bareModuleCost)   # bare-module cost, $
     blk.opex = pyo.Expression(expr=(blk.mixingPower + blk.blowerPower) * m.elecPrice * (m.daysOperation / 3600.0))
 
     return blk

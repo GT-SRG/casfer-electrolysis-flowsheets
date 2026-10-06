@@ -11,6 +11,11 @@
 #                 (placeholders, default 0; no NF data for these streams)     #
 #               - any solids entering (should be none) go to the retentate    #
 #                                                                             #
+#               Costs: bare-module cost C_BM = F_BM x C_p (packaged skid,     #
+#               F_BM = 1.4). At ~$500/m2 and pH 13 the membrane is a ceramic  #
+#               NF element: 20-yr life, replacement charged as operating cost #
+#               at membraneReplFrac (0.05/yr) of the membrane purchase cost.  #
+#                                                                             #
 # Input:        - m : Pyomo concrete model                                    #
 #                                                                             #
 # Output:       - m.nf                                                        #
@@ -41,14 +46,13 @@ def nf(m):
         or {}
     )
 
-    blk.membraneCost   = pyo.Param(initialize=nfParams.get('Membrane Cost', 500.0))            # $/m2
+    blk.membraneCost   = pyo.Param(initialize=nfParams.get('Membrane Cost', 500.0))            # $/m2 (purchased)
     blk.membraneLp     = pyo.Param(initialize=nfParams.get('Hydraulic Permeability', 5.0))     # L/m2/h/bar
     blk.pumpEfficiency = pyo.Param(initialize=nfParams.get('Pump Efficiency', 0.75))
-    blk.capexFactor    = pyo.Param(initialize=nfParams.get('Capex Factor', 1.0))
     blk.maxDeltaP      = pyo.Param(initialize=nfParams.get('Max Pressure Drop', 20.0), mutable=True)  # bar
     blk.targetRecovery = pyo.Param(initialize=nfParams.get('Target Recovery', 0.70), mutable=True)
-    blk.membraneReplFrac    = pyo.Param(initialize=nfParams.get('Membrane Replacement Fraction', 1.0 / 3.0), mutable=True)  # 1/yr
-    blk.membraneReplCostFac = pyo.Param(initialize=nfParams.get('Membrane Replacement Cost Factor', 1.0))
+    blk.membraneReplFrac = pyo.Param(initialize=nfParams.get('Membrane Replacement Fraction', 0.05), mutable=True)  # 1/yr (20-yr ceramic life)
+    blk.bareModuleFactor = pyo.Param(initialize=1.4, mutable=True)                                 # packaged skid
     blk.minDrivingForce = pyo.Param(initialize=0.5, mutable=True)  # bar
 
     blk.rejectionNH4Intrinsic = pyo.Param(initialize=nfParams.get('NH4 Intrinsic Rejection', 0.90), mutable=True)
@@ -132,13 +136,13 @@ def nf(m):
     blk.mgRejectionToRetentate = pyo.Expression(expr=ret.flow['mg'] / (sIn.flow['mg'] + 1e-12))
 
     # -------------------- Costs --------------------
-    blk.capex = pyo.Expression(expr=blk.capexFactor * blk.membraneCost * blk.area * 3)
+    blk.purchaseCost = pyo.Expression(expr=blk.membraneCost * blk.area)
+    blk.bareModuleCost = pyo.Expression(expr=blk.bareModuleFactor * blk.purchaseCost)
+    blk.capex = pyo.Expression(expr=blk.bareModuleCost)   # bare-module cost, $
     blk.feedFlowM3h = pyo.Expression(expr=blk.volFlowIn * 3600.0)
     blk.pumpPower = pyo.Expression(expr=(blk.feedFlowM3h * blk.deltaP) / (36.0 * (blk.pumpEfficiency + 1e-9)))  # kW
     blk.projectYears = pyo.Expression(expr=m.daysOperation / (365.0 * 24.0 * 3600.0))
-    blk.membraneReplOpex = pyo.Expression(
-        expr=blk.membraneReplFrac * blk.membraneReplCostFac * blk.membraneCost * blk.area * blk.projectYears
-    )
+    blk.membraneReplOpex = pyo.Expression(expr=blk.membraneReplFrac * blk.purchaseCost * blk.projectYears)
     blk.pumpOpex = pyo.Expression(expr=blk.pumpPower * m.elecPrice * (m.daysOperation / 3600.0))
     blk.opex = pyo.Expression(expr=blk.pumpOpex + blk.membraneReplOpex)
 

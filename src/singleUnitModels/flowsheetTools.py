@@ -18,6 +18,14 @@ except ImportError:
     from feedSource import feedSource
 
 
+# Capital cost basis. Every unit reports its bare-module cost (blk.capex = F_BM x C_p,
+# purchased cost from the reference correlation). The plant capital cost is the total
+# module cost, C_TM = totalModuleFactor x sum of bare-module costs, where 1.18 adds
+# contingency (15%) and contractor fees (3%) of the bare-module cost (Turton et al.).
+# Grassroots auxiliary facilities are excluded: the plant is a retrofit at an existing WRRF.
+totalModuleFactor = 1.18
+
+
 def safeValue(expr):
     try:
         return pyo.value(expr)

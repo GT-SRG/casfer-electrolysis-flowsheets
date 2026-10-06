@@ -67,8 +67,10 @@ def prepTank(m):
     blk.mgPrecipitationFrac = pyo.Param(initialize=1.0, mutable=True)      # fraction of dissolved Mg -> Mg(OH)2
     blk.pPrecipitationFrac  = pyo.Param(initialize=1.0, mutable=True)      # fraction of dissolved P -> solidP
 
-    blk.minCapex         = pyo.Param(initialize=10000.0, mutable=True)
-    blk.minLimeTankCapex = pyo.Param(initialize=5000.0, mutable=True)
+    # Bare-module factors (Turton): agitated tank as a carbon-steel vertical process vessel at
+    # ambient pressure (B1 + B2 = 2.25 + 1.82); lime slurry tank as an atmospheric storage tank
+    blk.bareModuleFactor         = pyo.Param(initialize=4.07, mutable=True)
+    blk.limeTankBareModuleFactor = pyo.Param(initialize=1.1, mutable=True)
 
     # -------------------- Streams --------------------
     streamTools.addStream(blk, 'sludgeIn')
@@ -144,14 +146,17 @@ def prepTank(m):
     blk.limeTankVolumeConstr = pyo.Constraint(expr=blk.limeTankVolume == blk.residenceTime * blk.baseVolFlowIn)
 
     # -------------------- Costs --------------------
-    blk.capexTank = pyo.Expression(
-        expr=blk.minCapex + blk.costReference * (blk.tankVolume / blk.volumeReference) ** blk.capexFactor
+    # Purchased costs, then bare-module cost C_BM = F_BM * C_p
+    blk.purchaseCostTank = pyo.Expression(
+        expr=blk.costReference * (blk.tankVolume / blk.volumeReference) ** blk.capexFactor
     )
-    blk.capexLimeTank = pyo.Expression(
-        expr=blk.minLimeTankCapex
-        + blk.limeTankCostReference * (blk.limeTankVolume / blk.limeTankVolumeReference) ** blk.limeTankCapexFactor
+    blk.purchaseCostLimeTank = pyo.Expression(
+        expr=blk.limeTankCostReference * (blk.limeTankVolume / blk.limeTankVolumeReference) ** blk.limeTankCapexFactor
     )
-    blk.capex = pyo.Expression(expr=1.64 * (blk.capexTank + blk.capexLimeTank))
+    blk.bareModuleCost = pyo.Expression(
+        expr=blk.bareModuleFactor * blk.purchaseCostTank + blk.limeTankBareModuleFactor * blk.purchaseCostLimeTank
+    )
+    blk.capex = pyo.Expression(expr=blk.bareModuleCost)   # bare-module cost, $
     blk.opex = pyo.Expression(expr=blk.baseCost * blk.totalCaO * m.daysOperation)  # $ lifetime, CaO only
 
     return blk

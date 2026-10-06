@@ -65,7 +65,7 @@ def sparger(model, blockName, paramsKey='Combined Sparger'):
     blk.barToAtm = pyo.Param(initialize=0.986923)
     blk.molwtN = pyo.Param(initialize=streamTools.molwtN)          # kg/mol
 
-    blk.minCapex = pyo.Param(initialize=30000.0, mutable=True)
+    blk.bareModuleFactor = pyo.Param(initialize=4.07, mutable=True)   # Turton CS vertical process vessel, ambient P
     blk.co2CostPerKg = pyo.Param(initialize=0.60, mutable=True)    # $/kg CO2 (upper-bound proxy)
     blk.molwtCO2 = pyo.Param(initialize=0.04401, mutable=True)     # kg/mol
 
@@ -177,10 +177,12 @@ def sparger(model, blockName, paramsKey='Combined Sparger'):
     blk.blowerPower = pyo.Expression(
         expr=(blk.totalGasFlowInM3S * blk.gasPressureRisePa) / (blk.blowerEff * 1000.0 + 1e-12)
     )  # kW
-    blk.capex = pyo.Expression(
-        expr=blk.minCapex + 1.64 * blk.capexMultiplier * blk.costReference
-        * (blk.tankVolume / (blk.volumeReference + 1e-12)) ** blk.capexFactor
+    # Purchased cost (capexMultiplier: high-solids gas-liquid contactor vs. plain tank), then C_BM = F_BM * C_p
+    blk.purchaseCost = pyo.Expression(
+        expr=blk.capexMultiplier * blk.costReference * (blk.tankVolume / (blk.volumeReference + 1e-12)) ** blk.capexFactor
     )
+    blk.bareModuleCost = pyo.Expression(expr=blk.bareModuleFactor * blk.purchaseCost)
+    blk.capex = pyo.Expression(expr=blk.bareModuleCost)   # bare-module cost, $
     blk.co2MassFlowIn = pyo.Expression(expr=blk.co2GasMolFlowIn * blk.molwtCO2)   # kg/s
     blk.co2Cost = pyo.Expression(expr=blk.co2MassFlowIn * blk.co2CostPerKg * model.daysOperation)
     blk.opex = pyo.Expression(

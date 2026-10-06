@@ -14,6 +14,10 @@
 #                   of the water split                                        #
 #               Osmotic pressure from TAN, Ca, Mg (coefficients as before).   #
 #                                                                             #
+#               Costs: bare-module cost C_BM = F_BM x C_p (packaged skid,     #
+#               F_BM = 1.4); membrane replacement is an operating cost at     #
+#               membraneReplFrac of the membrane purchase cost per year.      #
+#                                                                             #
 # Input:        - m : Pyomo concrete model                                    #
 #                                                                             #
 # Output:       - m.go                                                        #
@@ -39,13 +43,14 @@ def goMembraneDewatering(m):
 
     goParams = getParams.params.get('GO Membrane Dewatering') or {}
 
-    blk.membraneCost    = pyo.Param(initialize=goParams.get('Membrane Cost', 500.0))              # $/m2
+    blk.membraneCost    = pyo.Param(initialize=goParams.get('Membrane Cost', 500.0))              # $/m2 (purchased)
     blk.membraneLp      = pyo.Param(initialize=goParams.get('Hydraulic Permeability', 50.0))      # L/m2/h/bar
     blk.pumpEfficiency  = pyo.Param(initialize=goParams.get('Pump Efficiency', 0.75))
-    blk.capexFactor     = pyo.Param(initialize=goParams.get('Capex Factor', 1.0))
     blk.targetSolids    = pyo.Param(initialize=goParams.get('Target Solids', 0.25), mutable=True)  # retentate TSS
     blk.maxDeltaP       = pyo.Param(initialize=goParams.get('Max Pressure Drop', 30.0), mutable=True)  # bar
     blk.minDrivingForce = pyo.Param(initialize=0.5, mutable=True)  # bar
+    blk.bareModuleFactor = pyo.Param(initialize=1.4, mutable=True)                                 # packaged skid
+    blk.membraneReplFrac = pyo.Param(initialize=goParams.get('Membrane Replacement Fraction', 0.2), mutable=True)  # 1/yr (5-yr life)
 
     # Osmotic coefficients, bar per kg/m3 (TAN per kg-N/m3)
     blk.osmoticCoeff = pyo.Param(osmoticSpecies, initialize={'tan': 3.186, 'ca': 1.577, 'mg': 2.601}, mutable=True)
@@ -66,8 +71,8 @@ def goMembraneDewatering(m):
     sIn, ret, perm = blk.inlet, blk.retentate, blk.permeate
 
     blk.permeateMassFlow = pyo.Var(initialize=5.0, within=pyo.NonNegativeReals)            # kg/s
-    blk.area   = pyo.Var(initialize=23.0, within=pyo.NonNegativeReals, bounds=(1e-6, None))  # m2
-    blk.deltaP = pyo.Var(initialize=8.0, within=pyo.NonNegativeReals, bounds=(0, None))       # bar
+    blk.area   = pyo.Var(initialize=100.0, within=pyo.NonNegativeReals, bounds=(1e-6, None))  # m2
+    blk.deltaP = pyo.Var(initialize=2.0, within=pyo.NonNegativeReals, bounds=(0, None))       # bar
 
     # -------------------- Bulk split --------------------
     streamTools.passComponents(blk, 'solidsToRetentate', sIn, ret, streamTools.solidsFollowing)
@@ -131,9 +136,14 @@ def goMembraneDewatering(m):
 
     # -------------------- Costs --------------------
     blk.feedVolFlowBulk = pyo.Expression(expr=sIn.bulkVol)                    # m3/s, pump sizing
-    blk.capex = pyo.Expression(expr=blk.capexFactor * blk.membraneCost * blk.area * 3)  # 3 = replacement + peripherals
+    blk.purchaseCost = pyo.Expression(expr=blk.membraneCost * blk.area)
+    blk.bareModuleCost = pyo.Expression(expr=blk.bareModuleFactor * blk.purchaseCost)
+    blk.capex = pyo.Expression(expr=blk.bareModuleCost)   # bare-module cost, $
     blk.feedFlowM3h = pyo.Expression(expr=blk.feedVolFlowBulk * 3600.0)
     blk.pumpPower = pyo.Expression(expr=(blk.feedFlowM3h * blk.deltaP) / (36.0 * (blk.pumpEfficiency + 1e-9)))  # kW
-    blk.opex = pyo.Expression(expr=blk.pumpPower * m.elecPrice * (m.daysOperation / 3600.0))
+    blk.projectYears = pyo.Expression(expr=m.daysOperation / (365.0 * 24.0 * 3600.0))
+    blk.membraneReplOpex = pyo.Expression(expr=blk.membraneReplFrac * blk.purchaseCost * blk.projectYears)
+    blk.pumpOpex = pyo.Expression(expr=blk.pumpPower * m.elecPrice * (m.daysOperation / 3600.0))
+    blk.opex = pyo.Expression(expr=blk.pumpOpex + blk.membraneReplOpex)
 
     return blk

@@ -50,7 +50,7 @@ def receiveTank(m, blockName='rt'):
     blk.acidSolutionWtFraction   = pyo.Param(initialize=0.93, mutable=True)    # kg H2SO4 / kg solution
     blk.residualOHMolPerM3       = pyo.Param(initialize=100.0, mutable=True)   # mol OH- / m3 liquid
     blk.alkalinityBufferMolPerM3 = pyo.Param(initialize=20.0, mutable=True)    # mol H+ / m3 liquid
-    blk.minCapex                 = pyo.Param(initialize=10000.0, mutable=True)
+    blk.bareModuleFactor         = pyo.Param(initialize=4.07, mutable=True)    # Turton CS vertical process vessel, ambient P
 
     # -------------------- Streams --------------------
     streamTools.addStream(blk, 'inlet', initPH=13.0)
@@ -91,9 +91,9 @@ def receiveTank(m, blockName='rt'):
 
     # -------------------- Sizing and costs --------------------
     blk.receiveTankVolume = pyo.Constraint(expr=blk.tankVolume == blk.residenceTime * sIn.bulkVol)
-    blk.capex = pyo.Expression(
-        expr=blk.minCapex + 1.64 * blk.costReference * (blk.tankVolume / blk.volumeReference) ** blk.capexFactor
-    )
+    blk.purchaseCost = pyo.Expression(expr=blk.costReference * (blk.tankVolume / blk.volumeReference) ** blk.capexFactor)
+    blk.bareModuleCost = pyo.Expression(expr=blk.bareModuleFactor * blk.purchaseCost)
+    blk.capex = pyo.Expression(expr=blk.bareModuleCost)   # bare-module cost, $
     blk.opex = pyo.Expression(expr=blk.acidCost * blk.h2so4RequiredKgPerS * m.daysOperation)  # $ lifetime, pure acid basis
 
     return blk

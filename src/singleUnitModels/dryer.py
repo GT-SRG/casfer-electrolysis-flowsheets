@@ -9,6 +9,8 @@
 #               - only TAN can volatilize: free-NH3 fraction at the inlet pH  #
 #                 (T-dependent pKa) times a single-stage stripping fraction   #
 #               - orgN, K, P, Ca, Mg are non-volatile and stay in the product #
+#               - capital cost: bare-module cost C_BM = F_BM x C_p (Turton    #
+#                 rotary dryer, F_BM = 1.25)                                  #
 #                                                                             #
 # Input:        - m : Pyomo concrete model                                    #
 #                                                                             #
@@ -34,9 +36,10 @@ def dryer(m):
 
     dryerParams = getParams.params['Dryer']
 
-    blk.costReference    = pyo.Param(initialize=dryerParams['Cost Reference'])                 # $
+    blk.costReference    = pyo.Param(initialize=dryerParams['Cost Reference'])                 # $ (purchased)
     blk.dutyReference    = pyo.Param(initialize=dryerParams['Duty Reference'])                 # kg-water/s
     blk.capexFactor      = pyo.Param(initialize=dryerParams['Capex Factor'])
+    blk.bareModuleFactor = pyo.Param(initialize=1.25, mutable=True)                            # Turton rotary dryer
     blk.blowerEfficiency = pyo.Param(initialize=dryerParams['Blower Efficiency'], default=0.7)
     blk.latentHeat       = pyo.Param(initialize=dryerParams['Latent Heat of Vaporization'])    # kWh/kg-water
     blk.airDensity       = pyo.Param(initialize=dryerParams['Air Density'], default=1.225)     # kg/m3
@@ -58,7 +61,7 @@ def dryer(m):
     blk.waterVaporFlowOut = pyo.Var(initialize=0.7, within=pyo.NonNegativeReals)                         # kg/s
     blk.heatDuty          = pyo.Var(initialize=1000.0, within=pyo.NonNegativeReals)                      # kW
     blk.blowerPower       = pyo.Var(initialize=50.0, within=pyo.NonNegativeReals)                        # kW
-    blk.capex             = pyo.Var(initialize=1e6, within=pyo.NonNegativeReals)                         # $
+    blk.capex             = pyo.Var(initialize=1e6, within=pyo.NonNegativeReals)                         # $ (bare-module cost)
     blk.opex              = pyo.Var(initialize=1e5, within=pyo.NonNegativeReals)                         # $
 
     blk.solidsFlow = pyo.Expression(expr=sIn.solidsMass)              # kg/s
@@ -136,9 +139,11 @@ def dryer(m):
     )
 
     # -------------------- Energy and costs --------------------
-    blk.capexConstr = pyo.Constraint(
-        expr=blk.capex == blk.costReference * (blk.waterVaporFlowOut / (blk.dutyReference + 1e-9)) ** blk.capexFactor
+    blk.purchaseCost = pyo.Expression(
+        expr=blk.costReference * (blk.waterVaporFlowOut / (blk.dutyReference + 1e-9)) ** blk.capexFactor
     )
+    blk.bareModuleCost = pyo.Expression(expr=blk.bareModuleFactor * blk.purchaseCost)
+    blk.capexConstr = pyo.Constraint(expr=blk.capex == blk.bareModuleCost)
     blk.heatDutyConstr = pyo.Constraint(
         expr=blk.heatDuty == blk.airSpecificHeat * blk.airDensity * blk.airFlowIn
         * (blk.airTempIn - blk.ambientTemp) * 3600.0 / ((1.0 - blk.heatLossFactor) + 1e-9)

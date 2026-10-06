@@ -53,6 +53,8 @@ def gpm(m):
     blk.capexFactor = pyo.Param(initialize=gpmParams['Capex Factor'])
     blk.pumpEff = pyo.Param(initialize=gpmParams['Pump Efficiency'])
     blk.costExponent = pyo.Param(initialize=0.7)
+    blk.bareModuleFactor = pyo.Param(initialize=1.4, mutable=True)        # packaged skid
+    blk.membraneReplFrac = pyo.Param(initialize=0.2, mutable=True)        # 1/yr (5-yr membrane life)
 
     blk.recircEffect = pyo.Param(initialize=1.0, mutable=True)
     blk.minorK = pyo.Param(initialize=3.0, mutable=True)
@@ -295,11 +297,16 @@ def gpm(m):
     blk.pumpPower = pyo.Expression(expr=(blk.loopFlow * blk.deltaP) / (blk.pumpEff * 1000.0))   # kW
 
     # -------------------- Economics --------------------
-    blk.capex = pyo.Expression(
-        expr=blk.capexFactor * blk.costReference * (blk.area / blk.areaReference) ** blk.costExponent * 3
+    # Purchased cost of the membrane modules ($125/m2 at the 130 m2 reference, scaled with exponent 0.7)
+    blk.purchaseCost = pyo.Expression(
+        expr=blk.costReference * (blk.area / blk.areaReference) ** blk.costExponent
     )
+    blk.bareModuleCost = pyo.Expression(expr=blk.bareModuleFactor * blk.purchaseCost)
+    blk.capex = pyo.Expression(expr=blk.bareModuleCost)   # bare-module cost, $
     blk.totalAcidCost = pyo.Expression(expr=blk.acidMassFlow * blk.acidCost * m.daysOperation)
     blk.pumpOpex = pyo.Expression(expr=blk.pumpPower * m.elecPrice * (m.daysOperation / 3600.0))
-    blk.opex = pyo.Expression(expr=blk.totalAcidCost + blk.pumpOpex)
+    blk.projectYears = pyo.Expression(expr=m.daysOperation / (365.0 * 24.0 * 3600.0))
+    blk.membraneReplOpex = pyo.Expression(expr=blk.membraneReplFrac * blk.purchaseCost * blk.projectYears)
+    blk.opex = pyo.Expression(expr=blk.totalAcidCost + blk.pumpOpex + blk.membraneReplOpex)
 
     return blk
