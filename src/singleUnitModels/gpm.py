@@ -38,7 +38,9 @@ def gpm(m):
 
     # Core parameters
     blk.pKa = pyo.Param(initialize=gpmParams['pKa'], within=pyo.Any)
-    blk.acidCost = pyo.Param(initialize=gpmParams['Acid Cost'] / 2.0)   # $/kg solution
+    # Concentrated acid is bought and diluted on site to acidWtFracIn, so acid is priced on the
+    # pure-H2SO4 basis (same price as the receiving tank); dilution water is not charged
+    blk.acidCost = pyo.Param(initialize=gpmParams['Acid Cost'])   # $/kg pure H2SO4
     blk.inletDensity = pyo.Param(initialize=gpmParams['Inlet Density'])
     blk.inletViscosity = pyo.Param(initialize=gpmParams['Inlet Viscosity'])
     blk.inletDiffusivity = pyo.Param(initialize=gpmParams['Inlet Diffusivity'])
@@ -303,7 +305,7 @@ def gpm(m):
     )
     blk.bareModuleCost = pyo.Expression(expr=blk.bareModuleFactor * blk.purchaseCost)
     blk.capex = pyo.Expression(expr=blk.bareModuleCost)   # bare-module cost, $
-    blk.totalAcidCost = pyo.Expression(expr=blk.acidMassFlow * blk.acidCost * m.daysOperation)
+    blk.totalAcidCost = pyo.Expression(expr=blk.h2so4MassFlow * blk.acidCost * m.daysOperation)   # pure-acid basis
     blk.pumpOpex = pyo.Expression(expr=blk.pumpPower * m.elecPrice * (m.daysOperation / 3600.0))
     blk.projectYears = pyo.Expression(expr=m.daysOperation / (365.0 * 24.0 * 3600.0))
     blk.membraneReplOpex = pyo.Expression(expr=blk.membraneReplFrac * blk.purchaseCost * blk.projectYears)
