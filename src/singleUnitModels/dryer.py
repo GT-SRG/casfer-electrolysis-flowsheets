@@ -134,7 +134,7 @@ def dryer(m):
     blk.airMassFlowDry = pyo.Expression(expr=blk.airFlowIn * blk.airDensity)                          # kg/s
     blk.totalVolatileMassOut = pyo.Expression(expr=blk.waterVaporFlowOut + blk.ammoniaVapor)          # kg/s
     blk.humiditySaturationConstr = pyo.Constraint(
-        expr=blk.ambientHumidityRatio * blk.airMassFlowDry + blk.totalVolatileMassOut
+        expr=blk.ambientHumidityRatio * blk.airMassFlowDry + blk.waterVaporFlowOut
         <= blk.humiditySafetyFactor * blk.humidityRatioSat * blk.airMassFlowDry
     )
 
