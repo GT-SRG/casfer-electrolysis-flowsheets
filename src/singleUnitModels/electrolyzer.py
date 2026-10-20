@@ -45,8 +45,8 @@ def electrolyzer(m):
     blk.SEC           = pyo.Param(initialize=electrolyzerParams['Specific Energy Consumption'])  # kWh/kg-N (solid-bound N processed)
 
     # N liberation
-    blk.solidsNToLiquidFrac  = pyo.Param(initialize=0.219, mutable=True)  # fraction of solidN liberated
-    blk.liberatedTanFrac     = pyo.Param(initialize=0.0, mutable=True)    # TAN share of liberated N
+    blk.solidsNToLiquidFrac  = pyo.Param(initialize=0.253, mutable=True)  # fraction of solidN liberated
+    blk.liberatedTanFrac     = pyo.Param(initialize=0.3532, mutable=True)    # TAN share of liberated N
     blk.nitrogenLossFraction = pyo.Param(initialize=0.05, mutable=True)   # fraction of liquid TAN lost (volatilization + oxidation)
     blk.orgNLossFraction     = pyo.Param(initialize=0.0, mutable=True)    # fraction of dissolved orgN lost
 
