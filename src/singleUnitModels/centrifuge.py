@@ -47,7 +47,7 @@ def centrifuge(m):
     blk.bareModuleFactor = pyo.Param(initialize=1.57, mutable=True)                     # Turton centrifuge
     blk.beta             = pyo.Param(initialize=centrifugeParams['Beta'])
     blk.solidDiameter    = pyo.Param(initialize=centrifugeParams['Particle Diameter'])  # m
-    blk.particleDensity  = pyo.Param(initialize=centrifugeParams.get('Particle Density', 2650))  # kg/m3
+    blk.particleDensity  = pyo.Param(initialize=centrifugeParams.get('Particle Density', 1700))  # kg/m3
 
     # -------------------- Streams --------------------
     streamTools.addStream(blk, 'inlet')
