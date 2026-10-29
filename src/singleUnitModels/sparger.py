@@ -66,7 +66,7 @@ def sparger(model, blockName, paramsKey='Combined Sparger'):
     blk.molwtN = pyo.Param(initialize=streamTools.molwtN)          # kg/mol
 
     blk.bareModuleFactor = pyo.Param(initialize=4.07, mutable=True)   # Turton CS vertical process vessel, ambient P
-    blk.co2CostPerKg = pyo.Param(initialize=0.60, mutable=True)    # $/kg CO2 (upper-bound proxy)
+    blk.co2CostPerKg = pyo.Param(initialize=0.05, mutable=True)    # $/kg CO2 (upper-bound proxy)
     blk.molwtCO2 = pyo.Param(initialize=0.04401, mutable=True)     # kg/mol
 
     # -------------------- Streams --------------------
